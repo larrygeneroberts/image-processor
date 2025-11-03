@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Direct Thumbnail Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .photo { display: inline-block; margin: 10px; border: 1px solid #ccc; padding: 10px; }
+        .photo img { width: 150px; height: 150px; object-fit: cover; }
+        .error { color: red; }
+        <script>
+            // Timeline API has been removed. This test page is retained as a simple
+            // manual helper for debugging thumbnails — it no longer calls /api/timeline.
+            document.getElementById('status').textContent = 'Timeline API removed from this app.';
+            document.getElementById('photos').innerHTML = '<p>Use the admin pages or thumbnails endpoints directly.</p>';
+        </script>
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('status').innerHTML = 
+                    `<div class="error">❌ Error: ${error.message}</div>`;
+            });
+    </script>
+</body>
+</html>

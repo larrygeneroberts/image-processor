@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Database Admin Panel</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-blue: #2563eb;
+            --success-green: #059669;
+            --warning-orange: #d97706;
+            --error-red: #dc2626;
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8fafc;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-light: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        .admin-header {
+            background: linear-gradient(135deg, var(--primary-blue) 0%, #3b82f6 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-light);
+            height: 100%;
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary-blue);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .info-card {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-light);
+            margin-bottom: 1.5rem;
+        }
+
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-connected {
+            background-color: #dcfce7;
+            color: var(--success-green);
+        }
+
+        .status-disconnected {
+            background-color: #fef2f2;
+            color: var(--error-red);
+        }
+
+        .table-responsive {
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .progress-custom {
+            height: 8px;
+            border-radius: 4px;
+            background-color: #e2e8f0;
+        }
+
+        .progress-bar-custom {
+            background: linear-gradient(90deg, var(--primary-blue), #3b82f6);
+            border-radius: 4px;
+        }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 1000;
+        }
+
+        @media (max-width: 768px) {
+            .admin-header {
+                padding: 1rem 0;
+            }
+            
+            .stat-number {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="admin-header">
+        <div class="container">
+        <!-- Photo Upload Button/Form -->
+        <div class="info-card mb-4">
+            <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data" class="d-flex align-items-center gap-3">
+                <label for="photoInput" class="form-label mb-0"><strong>Add Photos:</strong></label>
+                <input type="file" id="photoInput" name="photos" accept="image/*" multiple class="form-control" style="max-width: 300px;">
+                <button type="submit" class="btn btn-success">
+                    <i class="fas fa-upload me-2"></i>Upload
+                </button>
+            </form>
+        </div>
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1 class="mb-2">
+                        <i class="fas fa-database me-3"></i>Photo Database Admin Panel
+                    </h1>
+                    <p class="mb-0 opacity-75">Database statistics and file management</p>
+                </div>
+                <div class="col-md-4 text-md-end">
+                    <div class="mb-2 d-flex gap-2 justify-content-end">
+
+                        </a>
+                        <a href="/admin" class="btn btn-warning">
+                            <i class="fas fa-tools me-2"></i>Admin
+                        </a>
+                    </div>
+                    <div id="connection-status" class="status-badge">
+                        <i class="fas fa-circle-notch fa-spin me-2"></i>Checking...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show mb-4" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+
+        <!-- Statistics Overview -->
+        {% if db_stats %}
+        <div class="row mb-4">
+            <div class="col-md-3 mb-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ "{:,}".format(db_stats.total_photos) }}</div>
+                    <div class="stat-label">Total Photos</div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ db_stats.photos_by_year|length }}</div>
+                    <div class="stat-label">Years Covered</div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ db_stats.recent_uploads }}</div>
+                    <div class="stat-label">Recent Uploads (7 days)</div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="stat-card text-center">
+                    <div class="stat-number">{{ db_stats.storage_paths|length }}</div>
+                    <div class="stat-label">Storage Locations</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="row">
+            <!-- Photos by Year -->
+            {% if db_stats and db_stats.photos_by_year %}
+            <div class="col-lg-6 mb-4">
+                <div class="info-card">
+                    <h4 class="mb-3">
+                        <i class="fas fa-calendar-alt me-2 text-primary"></i>Photos by Year
+                    </h4>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Year</th>
+                                    <th>Count</th>
+                                    <th>Percentage</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for year_data in db_stats.photos_by_year[:10] %}
+                                <tr>
+                                    <td><strong>{{ year_data.year }}</strong></td>
+                                    <td>{{ "{:,}".format(year_data.count) }}</td>
+                                    <td>
+                                        {% set percentage = (year_data.count / db_stats.total_photos * 100) %}
+                                        <div class="progress progress-custom">
+                                            <div class="progress-bar progress-bar-custom" 
+                                                 style="width: {{ percentage }}%"></div>
+                                        </div>
+                                        <small class="text-muted">{{ "%.1f"|format(percentage) }}%</small>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Storage Paths -->
+            {% if db_stats and db_stats.storage_paths %}
+            <div class="col-lg-6 mb-4">
+                <div class="info-card">
+                    <h4 class="mb-3">
+                        <i class="fas fa-folder me-2 text-primary"></i>Storage Paths
+                    </h4>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Path</th>
+                                    <th>Usage (MB)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>{{ db_path.split('/')[-1] }}</code></td>
+                                    <td>{{ '%.2f' % (db_size / 1024 / 1024) }}</td>
+                                </tr>
+                                <tr>
+                                    <td><code>{{ storage_paths.base.split('/')[-1] }}</code></td>
+                                    <td>{{ '%.2f' % (storage_sizes.base / 1024 / 1024) }}</td>
+                                </tr>
+                                <tr>
+                                    <td><code>{{ storage_paths.originals.split('/')[-1] }}</code></td>
+                                    <td>{{ '%.2f' % (storage_sizes.originals / 1024 / 1024) }}</td>
+                                </tr>
+                                <tr>
+                                    <td><code>{{ storage_paths.thumbnails.split('/')[-1] }}</code></td>
+                                    <td>{{ '%.2f' % (storage_sizes.thumbnails / 1024 / 1024) }}</td>
+                                </tr>
+                                <tr>
+                                    <td><code>{{ storage_paths.processed.split('/')[-1] }}</code></td>
+                                    <td>{{ '%.2f' % (storage_sizes.processed / 1024 / 1024) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- S3 integration removed: storage statistics are no longer displayed -->
+    </div>
+
+    <!-- Refresh Button -->
+    <button class="btn btn-primary btn-lg refresh-btn" onclick="location.reload()">
+        <i class="fas fa-sync-alt me-2"></i>Refresh
+    </button>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Check connection status
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                const statusElement = document.getElementById('connection-status');
+                if (data.status === 'healthy') {
+                    statusElement.innerHTML = '<i class="fas fa-check-circle me-2"></i>Connected';
+                    statusElement.className = 'status-badge status-connected';
+                } else {
+                    statusElement.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Disconnected';
+                    statusElement.className = 'status-badge status-disconnected';
+                }
+            })
+            .catch(() => {
+                const statusElement = document.getElementById('connection-status');
+                statusElement.innerHTML = '<i class="fas fa-times me-2"></i>Offline';
+                statusElement.className = 'status-badge status-disconnected';
+            });
+
+        // Auto-refresh every 5 minutes
+        setInterval(() => {
+            location.reload();
+        }, 300000);
+    </script>
+</body>
+</html>

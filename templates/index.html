@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Photo Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/improved-design.css" rel="stylesheet">
+    <style>
+        /* Page-specific styles */
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        .photo-thumbnail {
+            width: 100%;
+            height: 220px;
+            object-fit: cover;
+        }
+        
+        .status-badge {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            padding: 0.6rem 1.2rem;
+            border-radius: 25px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            box-shadow: var(--shadow-md);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .status-connected {
+            background: linear-gradient(135deg, var(--success-green) 0%, var(--success-green-light) 100%);
+            color: var(--text-inverse);
+        }
+        
+        .status-disconnected {
+            background: linear-gradient(135deg, var(--error-red) 0%, var(--error-red-light) 100%);
+            color: var(--text-inverse);
+        }
+        
+        .stats-container {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-light);
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 1rem;
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary-blue);
+            display: block;
+        }
+        
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        
+        /* Stats cards for home page */
+        .stats-card {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-light);
+        }
+        
+        .stats-number {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: var(--primary-blue);
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+        
+        .welcome-section {
+            text-align: center;
+            padding: 2rem 0;
+            border-bottom: 1px solid var(--border-light);
+            margin-bottom: 2rem;
+        }
+        
+        .navigation-buttons {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 1.5rem;
+        }
+        
+        /* Upload Preview Styles */
+        .upload-preview {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .file-preview-card {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            transition: box-shadow 0.2s;
+        }
+        
+        .file-preview-card:hover {
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .preview-actions {
+            background: #e7f3ff;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        
+        @media (max-width: 768px) {
+            .photo-grid {
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 1rem;
+            }
+            
+            .navigation-buttons {
+                gap: 0.5rem;
+            }
+            
+            .status-badge {
+                position: relative;
+                top: auto;
+                right: auto;
+                margin-bottom: 1rem;
+                display: inline-block;
+            }
+            
+            .preview-actions {
+                text-align: center;
+            }
+            
+            .preview-actions .btn {
+                width: 100%;
+                margin-bottom: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid p-4">
+        <div class="main-container p-4 position-relative">
+            <div id="status-badge" class="status-badge">
+                <i class="fas fa-circle-notch fa-spin"></i> Checking...
+            </div>
+            
+            <div class="text-center mb-4">
+                <h1 class="display-4 fw-bold text-primary mb-3">
+                    <i class="fas fa-camera-retro me-3"></i>Local Photo Analyzer
+                </h1>
+                <p class="lead text-muted">Connected to Postgres Database</p>
+                <div class="mt-3">
+                    <a href="/gallery" class="btn btn-outline-primary me-2">
+                        <i class="fas fa-images me-2"></i>Gallery
+                    </a>
+                    <!-- Timeline removed -->
+                    <a href="/admin" class="btn btn-outline-secondary">
+                        <i class="fas fa-cogs me-2"></i>Admin
+                    </a>
+                </div>
+            </div>
+            
+            <!-- Statistics -->
+            {% if stats %}
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.total_photos }}</div>
+                        <div class="text-muted">Total Photos</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.total_size_gb }}GB</div>
+                        <div class="text-muted">Total Size</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.avg_size_mb }}MB</div>
+                        <div class="text-muted">Avg Size</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Upload Section -->
+            <div class="row mb-4">
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">
+                                <i class="fas fa-upload me-2"></i>Upload Photos
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <form id="uploadForm" enctype="multipart/form-data">
+                                <div class="mb-3">
+                                    <label for="fileInput" class="form-label">Select Photos</label>
+                                    <input type="file" class="form-control" id="fileInput" name="files" multiple accept="image/*">
+                                    <div class="form-text">Select one or more image files (JPG, PNG, GIF, BMP, TIFF)</div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Import Options</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" id="importPathInput" name="import_path" 
+                                               placeholder="/path/to/local/folder or leave blank for upload">
+                                    </div>
+                                    <div class="form-text">Enter a local path to import images from, or upload files above.</div>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary" id="uploadBtn">
+                                    <i class="fas fa-cloud-upload-alt me-2"></i>Upload Photos
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">
+                                <i class="fas fa-info-circle me-2"></i>Upload Features
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <ul class="list-unstyled">
+                                <li class="mb-2">
+                                    <i class="fas fa-check text-success me-2"></i>
+                                    <strong>Duplicate Detection:</strong> Automatically checks for exact and similar duplicates
+                                </li>
+                                <li class="mb-2">
+                                    <i class="fas fa-check text-success me-2"></i>
+                                    <strong>EXIF Analysis:</strong> Extracts photo date, camera info, and metadata
+                                </li>
+                                <li class="mb-2">
+                                    <i class="fas fa-check text-success me-2"></i>
+                                    <strong>Local Import:</strong> Import multiple photos from a local directory
+                                </li>
+                                <li class="mb-2">
+                                    <i class="fas fa-check text-success me-2"></i>
+                                    <strong>Thumbnail Generation:</strong> Creates optimized thumbnails
+                                </li>
+                                <li class="mb-2">
+                                    <i class="fas fa-check text-success me-2"></i>
+                                    <strong>Safe Storage:</strong> Only unique photos are added to database
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Upload Progress -->
+            <div id="uploadProgress" class="card mb-4" style="display: none;">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-spinner fa-spin me-2"></i>Processing Upload...
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="progress mb-3">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <div id="uploadStatus">Preparing upload...</div>
+                </div>
+            </div>
+            
+            <!-- Upload Results -->
+            <div id="uploadResults" class="card mb-4" style="display: none;">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-check-circle me-2"></i>Upload Results
+                    </h5>
+                </div>
+                <div class="card-body" id="uploadResultsContent">
+                    <!-- Results will be populated here -->
+                </div>
+            </div>
+            
+            <div id="photos-container">
+                {% if photos %}
+                    <div class="photo-grid">
+                        {% for photo in photos %}
+                        <div class="photo-card position-relative">
+                            
+                            <img src="/photo/{{ photo.id }}/thumbnail" 
+                                 alt="{{ photo.original_filename }}" 
+                                 class="photo-thumbnail"
+                                 onerror="this.parentElement.innerHTML='<div class=&quot;photo-thumbnail bg-light d-flex align-items-center justify-content-center&quot;><i class=&quot;fas fa-image text-muted&quot; style=&quot;font-size: 3rem;&quot;></i></div>'">
+                            
+                            <div class="photo-info">
+                                <h6 class="mb-2 text-truncate">{{ photo.original_filename }}</h6>
+                                <small class="text-muted">
+                                    {% if photo.photo_taken_date %}
+                                        <i class="fas fa-calendar me-1"></i>
+                                        {{ photo.photo_taken_date[:10] }}
+                                    {% else %}
+                                        <i class="fas fa-upload me-1"></i>
+                                        {{ photo.upload_timestamp[:10] }}
+                                    {% endif %}
+                                </small>
+                                <br>
+                                <small class="text-muted">
+                                    {% if photo.image_width and photo.image_height %}
+                                        {{ photo.image_width }} × {{ photo.image_height }}
+                                    {% endif %}
+                                </small>
+                                <div class="mt-2">
+                                    <a href="/photo/{{ photo.id }}" class="btn btn-sm btn-primary">
+                                        <i class="fas fa-eye me-1"></i>View Details
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-5">
+                        <i class="fas fa-images text-muted" style="font-size: 5rem;"></i>
+                        <h4 class="mt-3 text-muted">No photos found</h4>
+                        <p class="text-muted">Your processed photos will appear here</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Check database connection status
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                const badge = document.getElementById('status-badge');
+                if (data.status === 'healthy') {
+                    badge.innerHTML = '<i class="fas fa-database me-1"></i>Postgres Connected';
+                    badge.className = 'status-badge status-connected';
+                } else {
+                    badge.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>DB Disconnected';
+                    badge.className = 'status-badge status-disconnected';
+                }
+            })
+            .catch(() => {
+                const badge = document.getElementById('status-badge');
+                badge.innerHTML = '<i class="fas fa-times me-1"></i>Offline';
+                badge.className = 'status-badge status-disconnected';
+            });
+
+        // Handle upload form submission (uses local import path input)
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const fileInput = document.getElementById('fileInput');
+            const importPathInput = document.getElementById('importPathInput');
+            const files = fileInput.files;
+            const importPath = importPathInput.value.trim();
+
+            if (files.length === 0 && !importPath) {
+                alert('Please select files or enter a local import path');
+                return;
+            }
+
+            // Show preview first
+            showUploadPreview(files, importPath);
+        });
+
+        function showUploadPreview(files, importPath) {
+            const resultsDiv = document.getElementById('uploadResults');
+            const contentDiv = document.getElementById('uploadResultsContent');
+
+            let totalSize = 0;
+            let previewHtml = `
+                <div class="alert alert-info">
+                    <h5><i class="fas fa-eye me-2"></i>Upload Preview</h5>
+                    <p>Please review what will be uploaded and confirm to proceed:</p>
+                </div>
+                <div class="upload-preview">
+            `;
+
+            // Preview selected files
+            if (files && files.length > 0) {
+                // Calculate total size
+                for (let i = 0; i < files.length; i++) {
+                    totalSize += files[i].size;
+                }
+
+                const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+
+                previewHtml += `
+                    <div class="mb-3">
+                        <h6><i class="fas fa-images me-2"></i>Selected Files</h6>
+                        <div class="alert alert-light mb-2">
+                            <strong>${files.length}</strong> files selected 
+                            (<strong>${totalSizeMB} MB</strong> total)
+                        </div>
+                        <div class="row">
+                `;
+
+                for (let i = 0; i < Math.min(files.length, 8); i++) {
+                    const file = files[i];
+                    const fileSize = (file.size / (1024 * 1024)).toFixed(2);
+                    const fileType = file.type || 'Unknown';
+
+                    previewHtml += `
+                        <div class="col-md-6 col-lg-4 mb-2">
+                            <div class="file-preview-card">
+                                <div class="d-flex align-items-center">
+                                    <i class="fas fa-image text-primary me-2"></i>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-bold text-truncate" style="max-width: 150px;" title="${file.name}">
+                                            ${file.name}
+                                        </div>
+                                        <small class="text-muted">${fileSize} MB • ${fileType}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                if (files.length > 8) {
+                    previewHtml += `
+                        <div class="col-12">
+                            <div class="text-center text-muted">
+                                <i class="fas fa-ellipsis-h me-2"></i>
+                                <strong>${files.length - 8}</strong> more files will be uploaded
+                            </div>
+                        </div>
+                    `;
+                }
+
+                previewHtml += `</div>`;
+
+                // Add processing info
+                previewHtml += `
+                    <div class="alert alert-info mt-2">
+                        <small>
+                            <i class="fas fa-info-circle me-1"></i>
+                            Each file will be analyzed for metadata, duplicates will be detected, 
+                            and photos will be organized by date and location.
+                        </small>
+                    </div>
+                `;
+            }
+
+            // Preview import path
+            if (importPath) {
+                previewHtml += `
+                    <div class="mb-3">
+                        <h6><i class="fas fa-folder me-2"></i>Local Path Import</h6>
+                        <div class="alert alert-secondary">
+                            <div class="d-flex align-items-center">
+                                <i class="fas fa-folder-open text-info me-2"></i>
+                                <div>
+                                    <code class="bg-white px-2 py-1 rounded">${importPath}</code>
+                                    <br><small class="text-muted mt-1 d-block">
+                                        This will scan and import images from the specified local directory.
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            previewHtml += `</div>`;
+
+            // Add confirmation buttons
+            previewHtml += `
+                <div class="preview-actions">
+                    <div class="d-flex gap-2 justify-content-center">
+                        <button class="btn btn-success btn-lg" onclick="confirmUpload()">
+                            <i class="fas fa-check me-2"></i>Confirm & Upload
+                        </button>
+                        <button class="btn btn-outline-secondary btn-lg" onclick="cancelUpload()">
+                            <i class="fas fa-times me-2"></i>Cancel
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            contentDiv.innerHTML = previewHtml;
+            resultsDiv.style.display = 'block';
+
+            // Scroll to preview
+            resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function confirmUpload() {
+            const fileInput = document.getElementById('fileInput');
+            const importPathInput = document.getElementById('importPathInput');
+            const files = fileInput.files;
+            const importPath = importPathInput.value.trim();
+
+            // Hide preview and show progress
+            document.getElementById('uploadResults').style.display = 'none';
+            showUploadProgress();
+
+            // Create form data
+            const formData = new FormData();
+
+            // Add files (use field name 'photos' to match server expectation)
+            for (let i = 0; i < files.length; i++) {
+                formData.append('photos', files[i]);
+            }
+
+            // Add import path
+            if (importPath) {
+                formData.append('import_path', importPath);
+                formData.append('confirmed', 'true');
+            }
+
+            // Upload files
+            fetch('/upload', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                hideUploadProgress();
+
+                // Show upload results
+                showUploadResults(data);
+
+                // Clear form
+                fileInput.value = '';
+                importPathInput.value = '';
+
+                // Refresh photo grid if successful. Use `inserted` (server) if present,
+                // otherwise fall back to older `successful` field for compatibility.
+                const insertedCount = (data.summary && (data.summary.inserted || data.summary.successful || 0)) || 0;
+                if (data.success && insertedCount > 0) {
+                    setTimeout(() => {
+                        location.reload();
+                    }, 1500);
+                }
+            })
+            .catch(error => {
+                hideUploadProgress();
+                console.error('Upload error:', error);
+                showUploadError('Upload failed: ' + (error.message || 'Unknown error'));
+            });
+        }
+
+        function cancelUpload() {
+            document.getElementById('uploadResults').style.display = 'none';
+            document.getElementById('fileInput').value = '';
+            document.getElementById('importPathInput').value = '';
+        }
+
+        function showUploadProgress() {
+            document.getElementById('uploadProgress').style.display = 'block';
+            document.getElementById('uploadResults').style.display = 'none';
+            document.getElementById('uploadBtn').disabled = true;
+
+            const progressBar = document.querySelector('.progress-bar');
+            let progress = 0;
+            const interval = setInterval(() => {
+                progress += Math.random() * 10;
+                if (progress > 90) progress = 90;
+                progressBar.style.width = progress + '%';
+            }, 200);
+
+            window.uploadInterval = interval;
+        }
+
+        function hideUploadProgress() {
+            document.getElementById('uploadProgress').style.display = 'none';
+            document.getElementById('uploadBtn').disabled = false;
+            if (window.uploadInterval) {
+                clearInterval(window.uploadInterval);
+            }
+            const progressBar = document.querySelector('.progress-bar');
+            progressBar.style.width = '100%';
+        }
+
+        function showUploadResults(data) {
+            const resultsDiv = document.getElementById('uploadResults');
+            const contentDiv = document.getElementById('uploadResultsContent');
+
+            let html = '';
+
+            if (data.success) {
+                html = `
+                    <div class="alert alert-success">
+                        <h5><i class="fas fa-check-circle me-2"></i>Upload Successful!</h5>
+                        <p class="mb-0">Photos have been uploaded and processed successfully.</p>
+                    </div>
+                `;
+            } else {
+                html = `
+                    <div class="alert alert-danger">
+                        <h5><i class="fas fa-exclamation-triangle me-2"></i>Upload Failed</h5>
+                        <p class="mb-0">Error: ${data.error || data.message || 'Unknown error occurred'}</p>
+                    </div>
+                `;
+            }
+
+            // Individual results
+            if (data.results && data.results.length > 0) {
+                html += '<h6 class="mt-3">Individual Results:</h6>';
+                html += '<div class="list-group">';
+
+                data.results.forEach(result => {
+                    const iconClass = result.success ? 'fa-check-circle text-success' : 'fa-times-circle text-danger';
+                    const alertClass = result.success ? 'list-group-item-success' : 'list-group-item-danger';
+
+                    html += `
+                        <div class="list-group-item ${alertClass}">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <h6 class="mb-1">
+                                        <i class="fas ${iconClass} me-2"></i>
+                                        ${result.filename}
+                                    </h6>
+                                    <p class="mb-1">
+                                        ${result.success ? (result.message || 'Uploaded successfully') : (result.message || result.error || 'Failed')}
+                                    </p>
+                                    ${result.local_path ? `<small class="text-muted">Path: ${result.local_path}</small>` : ''}
+                                </div>
+                                ${result.photo_id ? `<span class="badge bg-primary">ID: ${result.photo_id.substring(0, 8)}...</span>` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+            }
+
+            contentDiv.innerHTML = html;
+            resultsDiv.style.display = 'block';
+        }
+
+        function showUploadError(message) {
+            const resultsDiv = document.getElementById('uploadResults');
+            const contentDiv = document.getElementById('uploadResultsContent');
+
+            const html = `
+                <div class="alert alert-danger">
+                    <h5><i class="fas fa-exclamation-triangle me-2"></i>Upload Error</h5>
+                    <p class="mb-0">${message}</p>
+                    <button type="button" class="btn btn-sm btn-outline-danger mt-2" onclick="cancelUpload()">
+                        Close
+                    </button>
+                </div>
+            `;
+
+            contentDiv.innerHTML = html;
+            resultsDiv.style.display = 'block';
+        }
+    </script>
+
+    <script>
+    // Global error handler for any remaining fetch issues
+    window.addEventListener('unhandledrejection', function(event) {
+        console.error('Unhandled promise rejection:', event.reason);
+        
+        // Check if it's the JSON parsing error
+        if (event.reason && event.reason.message && 
+            (event.reason.message.includes('Unexpected token') || 
+             event.reason.message.includes('JSON'))) {
+            
+            console.log('🔧 Caught JSON parsing error - showing user-friendly message');
+            
+            // Show user-friendly error
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'alert alert-warning position-fixed';
+            errorDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+            errorDiv.innerHTML = `
+                <h6><i class="fas fa-exclamation-triangle me-2"></i>Connection Issue</h6>
+                <p class="mb-2">There was a communication error with the server. This might be due to:</p>
+                <ul class="mb-2">
+                    <li>Network connectivity issues</li>
+                    <li>Server temporarily unavailable</li>
+                    <li>Browser cache issues</li>
+                </ul>
+                <button class="btn btn-sm btn-outline-warning" onclick="location.reload()">
+                    <i class="fas fa-refresh me-1"></i>Refresh Page
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="this.parentElement.remove()">
+                    Close
+                </button>
+            `;
+            
+            document.body.appendChild(errorDiv);
+            
+            // Auto-remove after 10 seconds
+            setTimeout(() => {
+                if (errorDiv.parentElement) {
+                    errorDiv.remove();
+                }
+            }, 10000);
+            
+            // Prevent the error from being logged to console
+            event.preventDefault();
+        }
+    });
+    
+    // Also handle regular JavaScript errors
+    window.addEventListener('error', function(event) {
+        if (event.message && event.message.includes('Unexpected token')) {
+            console.log('🔧 Caught JavaScript error - likely JSON parsing issue');
+            event.preventDefault();
+        }
+    });
+    </script>
+    
+</body>
+</html>
