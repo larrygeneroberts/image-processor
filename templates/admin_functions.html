@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center">
+    <h2 class="mb-0">Admin Functions</h2>
+    <div>
+        <!-- Hidden small reset area: collapse into a details block to minimize prominence -->
+        <details style="display:inline-block;">
+            <summary class="small text-danger" style="cursor:pointer;">Danger zone ▾</summary>
+            <div style="padding:6px 10px;">
+                <button id="quick-reset-btn" class="btn btn-sm btn-outline-danger" title="Quick reset (danger)">
+                    <i class="fas fa-trash-alt me-1"></i>Quick Reset
+                </button>
+                <div class="form-text small text-muted mt-1">Quick reset posts to server with immediate effect; a typed confirmation form is available here for safer reset.</div>
+                <!-- Typed confirmation form moved into the danger zone -->
+                <form method="post" action="/admin/clear" class="mt-2">
+                    <div class="input-group input-group-sm">
+                        <input type="text" name="confirm" placeholder="Type YES to confirm" class="form-control form-control-sm" required>
+                        <button class="btn btn-sm btn-danger" type="submit">Confirm & Clear</button>
+                    </div>
+                    <div class="form-text small text-muted mt-1">This will delete DB records and stored files under the configured storage path.</div>
+                </form>
+            </div>
+        </details>
+    </div>
+</div>
+
+<!-- Visible marker to confirm template changes: remove or update as desired -->
+<div class="mt-2">
+    <div class="alert alert-secondary small mb-3">
+        <strong>Template revision:</strong> admin_functions.html — updated by tooling on 2025-11-03
+    </div>
+</div>
+
+<!-- explicit form removed; confirmation form now lives inside the Danger zone -->
+<hr>
+<h4>Storage & Database Info</h4>
+<div id="admin-alerts"></div>
+<div class="row">
+    <div class="col-md-6">
+        <ul>
+            <li><b>Database size:</b> {{ '%.1f' % (db_size / (1024*1024)) if db_size is not none else 'N/A' }} MB</li>
+            <li><b>Image repository size:</b> {{ '%.1f' % (storage_size / (1024*1024)) if storage_size is not none else 'N/A' }} MB</li>
+        </ul>
+    </div>
+    <div class="col-md-6">
+        <h5 class="small">Project Data Structure</h5>
+        <ul class="small">
+            <li><code>simple_app.py</code> — Flask app / admin UI</li>
+            <li><code>storage_manager.py</code> — Local storage API (photo_storage/)</li>
+            <li><code>database_config.py</code> — DB helpers (RDS/SQLite)</li>
+            <li><code>migrate_*.py</code> — Simple migrations for schema changes</li>
+            <li><code>utils/</code> — Logging, cleanup, and helpers</li>
+            <li><code>templates/</code> & <code>static/</code> — UI assets</li>
+            <li><code>tests/</code> — pytest tests and testing README</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const quickBtn = document.getElementById('quick-reset-btn');
+    const alerts = document.getElementById('admin-alerts');
+    if (quickBtn) {
+        quickBtn.addEventListener('click', function() {
+            const confirmText = prompt('To confirm a quick reset, type YES (all local data will be deleted).');
+            if (confirmText !== 'YES') {
+                return;
+            }
+
+            quickBtn.disabled = true;
+            quickBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Resetting...';
+
+            // Perform POST to the existing /admin/clear endpoint expected by the server
+            fetch('/admin/clear', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({confirm: 'YES'})
+            })
+            .then(r => {
+                if (r.redirected) {
+                    // Follow redirect — reload the page
+                    window.location = r.url;
+                    return null;
+                }
+                return r.text();
+            })
+            .then(text => {
+                if (text !== null) {
+                    // If not redirected, show a generic success message and reload
+                    const div = document.createElement('div');
+                    div.className = 'alert alert-info';
+                    div.textContent = 'Reset request submitted. If the server supports quick reset, data will be cleared.';
+                    alerts.appendChild(div);
+                    setTimeout(() => window.location.reload(), 1000);
+                }
+            })
+            .catch(err => {
+                const div = document.createElement('div');
+                div.className = 'alert alert-danger';
+                div.textContent = 'Error submitting reset request: ' + err.message;
+                alerts.appendChild(div);
+            })
+            .finally(() => {
+                quickBtn.disabled = false;
+                quickBtn.innerHTML = '<i class="fas fa-trash-alt me-1"></i>Reset DB';
+            });
+        });
+    }
+});
+</script>
+{% endblock %}

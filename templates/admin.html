@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - Local Photo Analyzer</title>
+    
+                            <li><code>DB_PORT</code>: 5432 (PostgreSQL)</li>
+                            <li><code>DB_NAME</code>: photo_analyzer</li>
+                            <li><code>DB_USER</code>: postgres</li>
+                            <li><code>DB_PASSWORD</code>: From Parameter Store</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Application Settings:</h6>
+                        <ul class="list-unstyled">
+                            <li><code>FLASK_ENV</code>: development</li>
+                            <li><code>DEBUG</code>: True</li>
+                            <li><code>HOST</code>: 0.0.0.0</li>
+                            <li><code>PORT</code>: 5000</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Database Switcher Modal -->
+    <div class="modal fade" id="databaseSwitcherModal" tabindex="-1" aria-labelledby="databaseSwitcherModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="databaseSwitcherModalLabel">
+                        <i class="fas fa-exchange-alt me-2"></i>Switch Database Backend
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>Important:</strong> Switching databases will change your data source. Make sure you understand the implications.
+                    </div>
+                    
+                    <div class="row">
+                        <!-- RDS Option -->
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100" id="rds-option">
+                                <div class="card-header bg-primary text-white">
+                                    <h6 class="mb-0">
+                                        <i class="fas fa-cloud me-2"></i>RDS PostgreSQL
+                                    </h6>
+                                </div>
+                                <div class="card-body">
+                                    <p class="card-text">
+                                        <strong>Remote Database</strong><br>
+                                        Production-grade PostgreSQL database hosted on AWS RDS.
+                                    </p>
+                                    <ul class="list-unstyled small">
+                                        <li>✅ High availability</li>
+                                        <li>✅ Automatic backups</li>
+                                        <li>✅ Scalable performance</li>
+                                        <li>✅ Multi-user access</li>
+                                        <li>⚠️ Requires network connection</li>
+                                    </ul>
+                                    <div class="mt-3">
+                                        <button class="btn btn-primary w-100" onclick="switchToDatabase('postgres')" id="switch-to-postgres">
+                                            <i class="fas fa-database me-1"></i>Use PostgreSQL Database
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Local Option -->
+                        <div class="col-md-6 mb-3">
+                            <div class="card h-100" id="local-option">
+                                <div class="card-header bg-success text-white">
+                                    <h6 class="mb-0">
+                                        <i class="fas fa-hdd me-2"></i>Local SQLite
+                                    </h6>
+                                </div>
+                                <div class="card-body">
+                                    <p class="card-text">
+                                        <strong>Local Database</strong><br>
+                                        Lightweight SQLite database stored on your local machine.
+                                    </p>
+                                    <ul class="list-unstyled small">
+                                        <li>✅ No network required</li>
+                                        <li>✅ Fast local access</li>
+                                        <li>✅ Simple setup</li>
+                                        <li>✅ Portable data file</li>
+                                        <li>⚠️ Single user only</li>
+                                    </ul>
+                                    <div class="mt-3">
+                                        <button class="btn btn-success w-100" onclick="switchToDatabase('local')" id="switch-to-local">
+                                            <i class="fas fa-hdd me-1"></i>Use Local Database
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info mt-3">
+                        <h6><i class="fas fa-info-circle me-2"></i>Current Status</h6>
+                        <div id="current-db-info">Loading current database information...</div>
+                    </div>
+                        <!-- Compact Database Reset + Filesystem / Structure Info -->
+                        <div class="row mt-3">
+                            <div class="col-md-3">
+                                <!-- Small, less-prominent reset button tucked away -->
+                                <div class="d-grid">
+                                    <button id="reset-db-btn" class="btn btn-sm btn-outline-danger" title="Reset database (danger)">
+                                        <i class="fas fa-trash-alt me-1"></i>Reset DB
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="col-md-9">
+                                <div class="card">
+                                    <div class="card-body p-3">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <h6 class="mb-1">File System Usage</h6>
+                                                <p class="small text-muted mb-1">Storage locations and approximate sizes for photo files and thumbnails.</p>
+                                                <ul class="list-unstyled small mb-0">
+                                                    <li><strong>photo_storage/originals/</strong> — Original image files (by date)</li>
+                                                    <li><strong>photo_storage/thumbnails/</strong> — Generated thumbnails (JPEG)</li>
+                                                    <li><strong>photo_storage/processed/</strong> — Files moved after processing</li>
+                                                </ul>
+                                                <div class="mt-2 small text-muted" id="filesystem-usage">Loading usage...</div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <h6 class="mb-1">Project Data Structure</h6>
+                                                <p class="small text-muted mb-1">Quick overview of key folders & their roles.</p>
+                                                <ul class="list-unstyled small mb-0">
+                                                    <li><code>simple_app.py</code> — Flask app / admin UI</li>
+                                                    <li><code>storage_manager.py</code> — Central local storage API</li>
+                                                    <li><code>database_config.py</code> — DB connection helpers (RDS/SQLite)</li>
+                                                    <li><code>utils/</code> — Helpers (logging, cleanup, etc.)</li>
+                                                    <li><code>templates/</code> & <code>static/</code> — UI assets</li>
+                                                    <li><code>migrate_*.py</code> — Lightweight migrations for schema changes</li>
+                                                </ul>
+                                                <div class="mt-2 small text-muted">See <code>tests/README_TESTING.md</code> for testing patterns and converting legacy scripts.</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-outline-primary" onclick="refreshDatabaseInfo()">
+                        <i class="fas fa-sync me-1"></i>Refresh Status
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Database Management Functions
+        let currentDatabaseInfo = null;
+        
+        // Check database connection status on load
+        document.addEventListener('DOMContentLoaded', function() {
+            checkDatabaseStatus();
+            loadDatabaseInfo();
+            loadCleanupStats();
+            loadDatabaseConfig();
+            loadCleanupStats();
+        });
+        
+        function checkDatabaseStatus() {
+            fetch('/health')
+                .then(response => response.json())
+                .then(data => {
+                    const statusElement = document.getElementById('db-status');
+                    const statusText = document.getElementById('db-status-text');
+                    
+                    if (data.status === 'healthy') {
+                        statusElement.querySelector('.status-indicator').className = 'status-indicator status-connected';
+                        statusText.textContent = 'Connected';
+                    } else {
+                        statusElement.querySelector('.status-indicator').className = 'status-indicator status-disconnected';
+                        statusText.textContent = 'Disconnected';
+                    }
+                })
+                .catch(error => {
+                    const statusElement = document.getElementById('db-status');
+                    const statusText = document.getElementById('db-status-text');
+                    statusElement.querySelector('.status-indicator').className = 'status-indicator status-disconnected';
+                    statusText.textContent = 'Error';
+                });
+        }
+        
+        function loadDatabaseConfig() {
+            // This would typically come from an API endpoint
+            // For now, we'll show placeholder values
+            document.getElementById('db-host').textContent = 'PostgreSQL Host';
+            document.getElementById('db-port').textContent = '5432';
+            document.getElementById('db-name').textContent = 'photo_analyzer';
+            document.getElementById('db-user').textContent = 'postgres';
+        }
+        
+        function testConnection() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Testing...';
+            button.disabled = true;
+            
+            fetch('/health')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'healthy') {
+                        button.innerHTML = '<i class="fas fa-check me-2"></i>Connected!';
+                        button.className = 'btn btn-success w-100';
+                    } else {
+                        button.innerHTML = '<i class="fas fa-times me-2"></i>Failed';
+                        button.className = 'btn btn-danger w-100';
+                    }
+                    
+                    setTimeout(() => {
+                        button.innerHTML = originalText;
+                        button.className = 'btn btn-outline-primary w-100';
+                        button.disabled = false;
+                    }, 2000);
+                })
+                .catch(error => {
+                    button.innerHTML = '<i class="fas fa-times me-2"></i>Error';
+                    button.className = 'btn btn-danger w-100';
+                    
+                    setTimeout(() => {
+                        button.innerHTML = originalText;
+                        button.className = 'btn btn-outline-primary w-100';
+                        button.disabled = false;
+                    }, 2000);
+                });
+        }
+        
+        function refreshStats() {
+            location.reload();
+        }
+        
+        function analyzeFilenames() {
+            const button = document.getElementById('analyzeBtn');
+            const resultsDiv = document.getElementById('filenameAnalysisResults');
+            const resultsContent = document.getElementById('analysisResultsContent');
+            
+            // Update button state
+            const originalText = button.innerHTML;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Analyzing...';
+            button.disabled = true;
+            
+            // Show results area
+            resultsDiv.style.display = 'block';
+            resultsContent.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Analyzing filenames for better date extraction...';
+            
+            fetch('/api/analyze-filenames')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const results = data.results;
+                        resultsContent.innerHTML = `
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <strong>Photos Analyzed:</strong> ${results.analyzed}
+                                </div>
+                                <div class="col-md-4">
+                                    <strong>Dates Improved:</strong> <span class="text-success">${results.improved}</span>
+                                </div>
+                                <div class="col-md-4">
+                                    <strong>Errors:</strong> <span class="text-danger">${results.errors}</span>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <small class="text-muted">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    Filename analysis helps improve photo dating accuracy by extracting dates from camera and app naming patterns.
+                                    ${results.improved > 0 ? 'Timeline view will now show improved date organization.' : 'No date improvements were needed.'}
+                                </small>
+                            </div>
+                        `;
+                        
+                        if (results.improved > 0) {
+                            resultsDiv.className = 'alert alert-success mt-3';
+                        } else {
+                            resultsDiv.className = 'alert alert-info mt-3';
+                        }
+                    } else {
+                        resultsContent.innerHTML = `
+                            <div class="text-danger">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                Error: ${data.error}
+                            </div>
+                        `;
+                        resultsDiv.className = 'alert alert-danger mt-3';
+                    }
+                })
+                .catch(error => {
+                    resultsContent.innerHTML = `
+                        <div class="text-danger">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            Network error: ${error.message}
+                        </div>
+                    `;
+                    resultsDiv.className = 'alert alert-danger mt-3';
+                })
+                .finally(() => {
+                    // Restore button state
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                });
+        }
+        
+        function loadCleanupStats() {
+            fetch('/admin/cleanup/stats')
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.error) {
+                        document.getElementById('faceDataCount').textContent = (data.face_count + data.face_matches_count).toLocaleString();
+                        document.getElementById('duplicateCount').textContent = data.duplicate_photos.toLocaleString();
+                        document.getElementById('testPhotoCount').textContent = data.test_photos.toLocaleString();
+                        document.getElementById('oldPhotoCount').textContent = data.old_photos.toLocaleString();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading cleanup stats:', error);
+                });
+        }
+        
+        function performCleanup(cleanupType) {
+            const cleanupNames = {
+                'face_data': 'Face Recognition Data',
+                'duplicates': 'Duplicate Photos',
+                'test_photos': 'Test Photos',
+                'old_photos': 'Old Photos (30+ days)'
+            };
+            
+            const cleanupName = cleanupNames[cleanupType];
+            
+            // Show confirmation dialog
+            if (!confirm(`Are you sure you want to delete all ${cleanupName}?\n\nThis action cannot be undone!`)) {
+                return;
+            }
+            
+            // Get button and update state
+            const buttonId = `cleanup${cleanupType.charAt(0).toUpperCase() + cleanupType.slice(1).replace('_', '')}Btn`;
+            const button = document.getElementById(buttonId);
+            const originalText = button.innerHTML;
+            
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Cleaning...';
+            button.disabled = true;
+            
+            // Show results area
+            const resultsDiv = document.getElementById('cleanupResults');
+            const resultsContent = document.getElementById('cleanupResultsContent');
+            resultsDiv.style.display = 'block';
+            resultsContent.innerHTML = `<i class="fas fa-spinner fa-spin me-2"></i>Cleaning up ${cleanupName}...`;
+            
+            // Perform cleanup
+            fetch('/admin/cleanup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    type: cleanupType,
+                    confirm: true
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    resultsContent.innerHTML = `
+                        <div class="text-success">
+                            <i class="fas fa-check-circle me-2"></i>
+                            <strong>Success:</strong> ${data.message}
+                        </div>
+                        <div class="mt-2">
+                            <small class="text-muted">
+                                <i class="fas fa-info-circle me-1"></i>
+                                ${data.deleted} records were permanently deleted.
+                            </small>
+                        </div>
+                    `;
+                    resultsDiv.className = 'alert alert-success mt-3';
+                    
+                    // Refresh stats after successful cleanup
+                    setTimeout(() => {
+                        loadCleanupStats();
+                        refreshStats();
+                    }, 1000);
+                } else {
+                    resultsContent.innerHTML = `
+                        <div class="text-danger">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            <strong>Error:</strong> ${data.message}
+                        </div>
+                    `;
+                    resultsDiv.className = 'alert alert-danger mt-3';
+                }
+            })
+            .catch(error => {
+                resultsContent.innerHTML = `
+                    <div class="text-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>Network Error:</strong> ${error.message}
+                    </div>
+                `;
+                resultsDiv.className = 'alert alert-danger mt-3';
+            })
+            .finally(() => {
+                // Restore button state
+                button.innerHTML = originalText;
+                button.disabled = false;
+            });
+        }
+        
+        // Database Management Functions
+        function loadDatabaseInfo() {
+            fetch('/admin/database/info')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        currentDatabaseInfo = data.database;
+                        updateDatabaseDisplay(data.database);
+                    } else {
+                        console.error('Failed to load database info:', data.error);
+                        showDatabaseError(data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading database info:', error);
+                    showDatabaseError(error.message);
+                });
+        }
+        
+        function updateDatabaseDisplay(dbInfo) {
+            // Update current database type badge
+            const typeElement = document.getElementById('current-db-type');
+            const statusElement = document.getElementById('current-db-status');
+            const displayElement = document.getElementById('db-type-display');
+            const connectionElement = document.getElementById('db-connection-status');
+            const versionElement = document.getElementById('db-version');
+            
+            if (typeElement) {
+                typeElement.textContent = dbInfo.type.toUpperCase();
+                typeElement.className = `badge ${dbInfo.type === 'postgres' ? 'bg-primary' : 'bg-success'} me-2`;
+            }
+            
+            if (statusElement) {
+                statusElement.textContent = dbInfo.status === 'connected' ? 'Connected' : 'Disconnected';
+                statusElement.className = dbInfo.status === 'connected' ? 'text-success' : 'text-danger';
+            }
+            
+            if (displayElement) {
+                displayElement.textContent = dbInfo.type === 'postgres' ? 'PostgreSQL' : 'Local SQLite';
+            }
+            
+            if (connectionElement) {
+                connectionElement.innerHTML = dbInfo.status === 'connected' 
+                    ? '<span class="badge bg-success">Connected</span>'
+                    : '<span class="badge bg-danger">Disconnected</span>';
+            }
+            
+            if (versionElement) {
+                versionElement.textContent = dbInfo.version || 'Unknown';
+            }
+            
+            // Update connection details
+            if (dbInfo.config) {
+                const config = dbInfo.config;
+                
+                if (dbInfo.type === 'postgres') {
+                    document.getElementById('db-host').textContent = config.host || 'N/A';
+                    document.getElementById('db-port').textContent = config.port || 'N/A';
+                    document.getElementById('db-name').textContent = config.database || 'N/A';
+                    document.getElementById('db-user').textContent = config.user || 'N/A';
+                } else {
+                    document.getElementById('db-host').textContent = 'Local File';
+                    document.getElementById('db-port').textContent = 'N/A';
+                    document.getElementById('db-name').textContent = config.path ? config.path.split('/').pop() : 'N/A';
+                    document.getElementById('db-user').textContent = 'N/A';
+                }
+                
+                // Update size info
+                if (config.size !== undefined) {
+                    const sizeElement = document.getElementById('db-size');
+                    if (sizeElement) {
+                        const sizeMB = (config.size / (1024 * 1024)).toFixed(2);
+                        sizeElement.textContent = `${sizeMB} MB`;
+                    }
+                }
+            }
+            
+            // Update last check time
+            const lastCheckElement = document.getElementById('db-last-check');
+            if (lastCheckElement) {
+                lastCheckElement.textContent = new Date().toLocaleTimeString();
+            }
+        }
+        
+        function showDatabaseError(error) {
+            const elements = ['current-db-type', 'current-db-status', 'db-type-display'];
+            elements.forEach(id => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.textContent = 'Error';
+                    element.className = 'badge bg-danger';
+                }
+            });
+        }
+        
+        function testDatabaseConnection() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Testing...';
+            button.disabled = true;
+            
+            fetch('/admin/database/test')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showAlert('success', `Database connection test successful! Found ${data.stats.photos} photos and ${data.stats.faces} faces.`);
+                        
+                        // Update stats
+                        document.getElementById('db-photo-count').textContent = data.stats.photos.toLocaleString();
+                        document.getElementById('db-face-count').textContent = data.stats.faces.toLocaleString();
+                    } else {
+                        showAlert('danger', `Database connection test failed: ${data.error}`);
+                    }
+                })
+                .catch(error => {
+                    showAlert('danger', `Connection test error: ${error.message}`);
+                })
+                .finally(() => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                });
+        }
+        
+        function refreshDatabaseInfo() {
+            loadDatabaseInfo();
+            
+            // Show brief loading indicator
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Refreshing...';
+            button.disabled = true;
+            
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+                showAlert('info', 'Database information refreshed successfully.');
+            }, 1000);
+        }
+        
+        function showDatabaseSwitcher() {
+            // Load current database info for the modal
+            if (currentDatabaseInfo) {
+                updateModalDatabaseInfo(currentDatabaseInfo);
+            }
+            
+            // Show the modal
+            const modal = new bootstrap.Modal(document.getElementById('databaseSwitcherModal'));
+            modal.show();
+        }
+        
+        function updateModalDatabaseInfo(dbInfo) {
+            const currentDbInfo = document.getElementById('current-db-info');
+            if (currentDbInfo) {
+                const statusBadge = dbInfo.status === 'connected' 
+                    ? '<span class="badge bg-success">Connected</span>'
+                    : '<span class="badge bg-danger">Disconnected</span>';
+                
+                currentDbInfo.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>Current Database:</strong> 
+                            <span class="badge ${dbInfo.type === 'postgres' ? 'bg-primary' : 'bg-success'}">${dbInfo.type.toUpperCase()}</span>
+                        </div>
+                        <div>${statusBadge}</div>
+                    </div>
+                    <div class="mt-2 small text-muted">
+                        ${dbInfo.type === 'postgres' 
+                            ? `Host: ${dbInfo.config?.host || 'Unknown'} | Database: ${dbInfo.config?.database || 'Unknown'}`
+                            : `File: ${dbInfo.config?.path || 'Unknown'} | Size: ${((dbInfo.config?.size || 0) / (1024 * 1024)).toFixed(2)} MB`
+                        }
+                    </div>
+                `;
+            }
+            
+            // Update button states
+            const rdsButton = document.getElementById('switch-to-rds');
+            const localButton = document.getElementById('switch-to-local');
+            
+            if (dbInfo.type === 'postgres') {
+                rdsButton.innerHTML = '<i class="fas fa-check me-1"></i>Currently Active';
+                rdsButton.disabled = true;
+                rdsButton.className = 'btn btn-outline-primary w-100';
+                
+                localButton.innerHTML = '<i class="fas fa-hdd me-1"></i>Switch to Local';
+                localButton.disabled = false;
+                localButton.className = 'btn btn-success w-100';
+            } else {
+                localButton.innerHTML = '<i class="fas fa-check me-1"></i>Currently Active';
+                localButton.disabled = true;
+                localButton.className = 'btn btn-outline-success w-100';
+                
+                rdsButton.innerHTML = '<i class="fas fa-cloud me-1"></i>Switch to RDS';
+                rdsButton.disabled = false;
+                rdsButton.className = 'btn btn-primary w-100';
+            }
+        }
+        
+        function switchToDatabase(dbType) {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            
+            // Show confirmation
+            const dbName = dbType === 'postgres' ? 'RDS PostgreSQL' : 'Local SQLite';
+            if (!confirm(`Are you sure you want to switch to ${dbName} database?\n\nThis will change your data source immediately.`)) {
+                return;
+            }
+            
+            button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Switching...';
+            button.disabled = true;
+            
+            fetch('/admin/database/switch', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ type: dbType })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showAlert('success', data.message);
+                    
+                    // Close modal and refresh page
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('databaseSwitcherModal'));
+                    modal.hide();
+                    
+                    // Refresh database info
+                    setTimeout(() => {
+                        loadDatabaseInfo();
+                        refreshStats();
+                    }, 1000);
+                } else {
+                    showAlert('danger', `Failed to switch database: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                showAlert('danger', `Switch error: ${error.message}`);
+            })
+            .finally(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            });
+        }
+        
+        function showAlert(type, message) {
+            // Create and show a temporary alert
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+            alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            document.body.appendChild(alertDiv);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                if (alertDiv.parentNode) {
+                    alertDiv.remove();
+                }
+            }, 5000);
+        }
+
+        // Compact Reset DB handler (protected by confirmation)
+        document.addEventListener('DOMContentLoaded', function() {
+            const resetBtn = document.getElementById('reset-db-btn');
+            if (resetBtn) {
+                resetBtn.addEventListener('click', function() {
+                    if (!confirm('Resetting the database will permanently delete local data (where applicable).\n\nType OK to continue or Cancel to abort.')) {
+                        return;
+                    }
+
+                    // Provide feedback in the UI; this endpoint may be implemented server-side.
+                    resetBtn.className = 'btn btn-sm btn-danger disabled';
+                    resetBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Resetting...';
+
+                    fetch('/admin/database/clear', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirm: true })
+                    })
+                    .then(resp => resp.json())
+                    .then(data => {
+                        if (data && data.success) {
+                            showAlert('success', 'Database reset completed.');
+                            loadCleanupStats();
+                            loadDatabaseInfo();
+                        } else {
+                            showAlert('danger', data && data.message ? data.message : 'Database reset failed or endpoint not implemented.');
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Reset error', err);
+                        showAlert('danger', 'Network error while attempting reset.');
+                    })
+                    .finally(() => {
+                        resetBtn.className = 'btn btn-sm btn-outline-danger';
+                        resetBtn.innerHTML = '<i class="fas fa-trash-alt me-1"></i>Reset DB';
+                    });
+                });
+            }
+
+            // Try to load filesystem usage info (optional endpoint)
+            fetch('/admin/storage/usage')
+                .then(r => r.json())
+                .then(d => {
+                    const el = document.getElementById('filesystem-usage');
+                    if (!el) return;
+                    if (d && !d.error) {
+                        el.innerHTML = `<strong>Storage size:</strong> ${((d.total_bytes||0)/(1024*1024)).toFixed(2)} MB &nbsp; • &nbsp; <strong>Files:</strong> ${d.file_count||0}`;
+                    } else {
+                        el.textContent = 'Storage usage details are unavailable.';
+                    }
+                })
+                .catch(() => {
+                    const el = document.getElementById('filesystem-usage');
+                    if (el) el.textContent = 'Storage usage details are unavailable.';
+                });
+        });
+    </script>
+</body>
+</html>

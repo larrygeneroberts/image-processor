@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Photo Gallery - Local Photo Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/improved-design.css" rel="stylesheet">
+    <style>
+        /* Clean gallery styles */
+        .gallery-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+        
+        .month-selector {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .period-btn {
+            display: block;
+            width: 100%;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            background: white;
+            text-decoration: none;
+            color: #495057;
+            transition: all 0.3s ease;
+        }
+        
+        .period-btn:hover {
+            border-color: #007bff;
+            background: #f8f9ff;
+            color: #007bff;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+        }
+        
+        .period-btn.active {
+            border-color: #007bff;
+            background: #007bff;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+        }
+        
+        .period-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        
+        .photo-count {
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+        
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        .photo-card {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .photo-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+        }
+        
+        .photo-thumbnail {
+            width: 100%;
+            height: 200px;
+            object-fit: cover;
+            transition: transform 0.3s ease;
+        }
+        
+        .photo-card:hover .photo-thumbnail {
+            transform: scale(1.05);
+        }
+        
+        .photo-info {
+            padding: 1rem;
+        }
+        
+        .photo-filename {
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .photo-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+        
+        .pagination-wrapper {
+            margin-top: 3rem;
+            text-align: center;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #6c757d;
+        }
+        
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        /* Statistics cards */
+        .stats-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1rem;
+        }
+        
+        .stats-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #007bff;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .photo-grid {
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 1rem;
+            }
+            
+            .gallery-header {
+                padding: 1.5rem;
+            }
+            
+            .month-selector {
+                padding: 1rem;
+            }
+        }
+        
+        /* Lightbox styles */
+        .lightbox-modal {
+            display: none;
+            position: fixed;
+            z-index: 9999;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+        
+        .lightbox-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 95%;
+            max-height: 95%;
+            text-align: center;
+        }
+        
+        .lightbox-image {
+            max-width: 100%;
+            max-height: 90vh;
+            border-radius: 10px;
+        }
+        
+        .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: white;
+            font-size: 40px;
+            cursor: pointer;
+            z-index: 10000;
+        }
+        
+        .lightbox-info {
+            color: white;
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid p-4">
+        <div class="main-container p-4">
+            <!-- Header -->
+            <div class="gallery-header">
+                <h1 class="display-4 fw-bold mb-3">
+                    <i class="fas fa-images me-3"></i>Photo Gallery
+                </h1>
+                <p class="lead mb-0">
+                    {% if selected_period %}
+                        Viewing {{ selected_period.month_name }} {{ selected_period.year }}
+                    {% else %}
+                        Select a month and year to view your photos
+                    {% endif %}
+                </p>
+                
+                <!-- Navigation -->
+                <div class="mt-3">
+                    <a href="/" class="btn btn-light me-2">
+                        <i class="fas fa-home me-2"></i>Home
+                    </a>
+
+                    </a>
+                    <a href="/admin" class="btn btn-outline-light">
+                        <i class="fas fa-cogs me-2"></i>Admin
+                    </a>
+                </div>
+            </div>
+            
+            <!-- Statistics -->
+            {% if stats %}
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.total_photos }}</div>
+                        <div class="text-muted">Total Photos</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.total_size_gb }}GB</div>
+                        <div class="text-muted">Total Size</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stats-card">
+                        <div class="stats-number">{{ stats.avg_size_mb }}MB</div>
+                        <div class="text-muted">Avg Size</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Month/Year Selector -->
+            <div class="month-selector">
+                <h5 class="mb-3">
+                    <i class="fas fa-calendar-alt me-2"></i>Select Month & Year
+                </h5>
+                
+                {% if available_periods %}
+                    <div class="row">
+                        {% for period in available_periods %}
+                            <div class="col-lg-3 col-md-4 col-sm-6 mb-3">
+                                <a href="{{ url_for('gallery', year=period.year, month=period.month) }}" 
+                                   class="period-btn {% if selected_period and selected_period.year == period.year and selected_period.month == period.month %}active{% endif %}">
+                                    <div class="period-name">{{ period.display_name }}</div>
+                                    <div class="photo-count">{{ period.photo_count }} photos</div>
+                                </a>
+                            </div>
+                        {% endfor %}
+                    </div>
+                    
+                    {% if selected_period %}
+                        <div class="text-center mt-3">
+                            <a href="{{ url_for('gallery') }}" class="btn btn-outline-secondary">
+                                <i class="fas fa-times me-2"></i>Clear Selection
+                            </a>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="empty-state">
+                        <i class="fas fa-calendar-times"></i>
+                        <h5>No photos found</h5>
+                        <p>Upload some photos to see them organized by month and year</p>
+                        <a href="/" class="btn btn-primary">
+                            <i class="fas fa-upload me-2"></i>Upload Photos
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+            
+            <!-- Photo Grid -->
+            {% if photos %}
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4>
+                        <i class="fas fa-images me-2"></i>
+                        {{ selected_period.month_name }} {{ selected_period.year }} Photos
+                    </h4>
+                    <span class="badge bg-primary fs-6">{{ pagination.total }} photos</span>
+                </div>
+                
+                <div class="photo-grid">
+                    {% for photo in photos %}
+                        <div class="photo-card" onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')">
+                            <img src="/photo/{{ photo.id }}/thumbnail" 
+                                 alt="{{ photo.original_filename }}" 
+                                 class="photo-thumbnail"
+                                 loading="lazy"
+                                 onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg=='">
+                            
+                            <div class="photo-info">
+                                <div class="photo-filename text-truncate" title="{{ photo.original_filename }}">
+                                    {{ photo.original_filename }}
+                                </div>
+                                <div class="photo-meta">
+                                    <span>
+                                        <i class="fas fa-calendar me-1"></i>
+                                        {% if photo.photo_taken_date %}
+                                            {{ photo.photo_taken_date.strftime('%Y-%m-%d') }}
+                                        {% else %}
+                                            {{ photo.upload_timestamp.strftime('%Y-%m-%d') }}
+                                        {% endif %}
+                                    </span>
+                                    <span>
+                                        {% if photo.image_width and photo.image_height %}
+                                            {{ photo.image_width }}×{{ photo.image_height }}
+                                        {% endif %}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+                
+                <!-- Pagination -->
+                {% if pagination.total_pages > 1 %}
+                    <div class="pagination-wrapper">
+                        <nav aria-label="Photo gallery pagination">
+                            <ul class="pagination justify-content-center">
+                                {% if pagination.has_prev %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="{{ url_for('gallery', year=selected_period.year, month=selected_period.month, page=pagination.prev_num) }}">
+                                            <i class="fas fa-chevron-left"></i> Previous
+                                        </a>
+                                    </li>
+                                {% endif %}
+                                
+                                {% for page_num in range(1, pagination.total_pages + 1) %}
+                                    {% if page_num == pagination.page %}
+                                        <li class="page-item active">
+                                            <span class="page-link">{{ page_num }}</span>
+                                        </li>
+                                    {% elif page_num <= 3 or page_num > pagination.total_pages - 3 or (page_num >= pagination.page - 1 and page_num <= pagination.page + 1) %}
+                                        <li class="page-item">
+                                            <a class="page-link" href="{{ url_for('gallery', year=selected_period.year, month=selected_period.month, page=page_num) }}">{{ page_num }}</a>
+                                        </li>
+                                    {% elif page_num == 4 or page_num == pagination.total_pages - 3 %}
+                                        <li class="page-item disabled">
+                                            <span class="page-link">...</span>
+                                        </li>
+                                    {% endif %}
+                                {% endfor %}
+                                
+                                {% if pagination.has_next %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="{{ url_for('gallery', year=selected_period.year, month=selected_period.month, page=pagination.next_num) }}">
+                                            Next <i class="fas fa-chevron-right"></i>
+                                        </a>
+                                    </li>
+                                {% endif %}
+                            </ul>
+                        </nav>
+                        
+                        <div class="mt-3">
+                            <small class="text-muted">
+                                Showing {{ ((pagination.page - 1) * pagination.per_page + 1) }} to 
+                                {{ (pagination.page * pagination.per_page) if pagination.page * pagination.per_page <= pagination.total else pagination.total }} 
+                                of {{ pagination.total }} photos from {{ selected_period.month_name }} {{ selected_period.year }}
+                            </small>
+                        </div>
+                    </div>
+                {% endif %}
+            {% elif selected_period %}
+                <div class="empty-state">
+                    <i class="fas fa-calendar-times"></i>
+                    <h4>No photos found</h4>
+                    <p>No photos found for {{ selected_period.month_name }} {{ selected_period.year }}</p>
+                    <a href="{{ url_for('gallery') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-arrow-left me-2"></i>Choose Different Month
+                    </a>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Lightbox Modal -->
+    <div id="lightboxModal" class="lightbox-modal">
+        <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
+        <div class="lightbox-content">
+            <div id="lightboxImageContainer">
+                <div class="spinner-border text-light" role="status"></div>
+                <p class="text-white mt-3">Loading full image...</p>
+            </div>
+            <div id="lightboxInfo" class="lightbox-info" style="display: none;">
+                <h5 id="lightboxFilename"></h5>
+                <div class="mt-2">
+                    <button class="btn btn-primary btn-sm" onclick="viewPhotoDetails()">
+                        <i class="fas fa-info-circle me-1"></i>View Details
+                    </button>
+                    <button class="btn btn-outline-light btn-sm" onclick="closeLightbox()">
+                        <i class="fas fa-times me-1"></i>Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentPhotoId = null;
+        
+        function openLightbox(photoId, filename) {
+            currentPhotoId = photoId;
+            const modal = document.getElementById('lightboxModal');
+            const imageContainer = document.getElementById('lightboxImageContainer');
+            const info = document.getElementById('lightboxInfo');
+            const filenameElement = document.getElementById('lightboxFilename');
+            
+            // Reset modal state
+            imageContainer.innerHTML = '<div class="spinner-border text-light" role="status"></div><p class="text-white mt-3">Loading full image...</p>';
+            info.style.display = 'none';
+            filenameElement.textContent = filename;
+            
+            // Show modal
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden';
+            
+            // Load full image
+            const img = document.createElement('img');
+            img.className = 'lightbox-image';
+            img.alt = filename;
+            
+            img.onload = function() {
+                imageContainer.innerHTML = '';
+                imageContainer.appendChild(img);
+                info.style.display = 'block';
+            };
+            
+            img.onerror = function() {
+                imageContainer.innerHTML = `
+                    <div class="text-white text-center">
+                        <i class="fas fa-exclamation-triangle" style="font-size: 3rem;"></i>
+                        <p class="mt-3">Could not load full image</p>
+                        <button class="btn btn-primary" onclick="viewPhotoDetails()">
+                            View Details Page
+                        </button>
+                    </div>
+                `;
+                info.style.display = 'block';
+            };
+            
+            // Start loading full image from the canonical /photo/<id> route
+            img.src = `/photo/${photoId}`;
+        }
+        
+        function viewPhotoDetails() {
+            if (currentPhotoId) {
+                window.location.href = '/photo/' + currentPhotoId;
+            }
+        }
+        
+        function closeLightbox() {
+            const modal = document.getElementById('lightboxModal');
+            modal.style.display = 'none';
+            document.body.style.overflow = 'auto';
+            currentPhotoId = null;
+        }
+        
+        // Close lightbox when clicking outside the content
+        document.getElementById('lightboxModal').onclick = function(event) {
+            if (event.target === this) {
+                closeLightbox();
+            }
+        };
+        
+        // Close lightbox with Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeLightbox();
+            }
+        });
+    </script>
+</body>
+</html>

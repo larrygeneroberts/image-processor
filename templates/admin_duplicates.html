@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duplicate Management - Admin</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/improved-design.css" rel="stylesheet">
+    <style>
+        .duplicate-card {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border-light);
+            margin-bottom: 1rem;
+            transition: box-shadow 0.3s ease;
+        }
+        
+        .duplicate-card:hover {
+            box-shadow: var(--shadow-lg);
+        }
+        
+        .duplicate-thumbnail {
+            width: 120px;
+            height: 120px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        
+        .duplicate-type-badge {
+            font-size: 0.8rem;
+            padding: 0.4rem 0.8rem;
+        }
+        
+        .status-badge {
+            font-size: 0.8rem;
+            padding: 0.4rem 0.8rem;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+            border: 1px solid var(--border-light);
+            box-shadow: var(--shadow-sm);
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary-blue);
+        }
+        
+        .filter-section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-light);
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid p-4">
+        <div class="main-container p-4">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <div>
+                    <h1 class="display-4 fw-bold text-primary mb-2">
+                        <i class="fas fa-copy me-3"></i>Duplicate Management
+                    </h1>
+                    <p class="lead text-muted">Review and manage duplicate photos</p>
+                </div>
+                <div>
+                    <a href="/admin" class="btn btn-primary me-2">
+                        <i class="fas fa-arrow-left me-2"></i>Back to Admin
+                    </a>
+                    <button class="btn btn-outline-success" onclick="refreshData()">
+                        <i class="fas fa-sync me-2"></i>Refresh
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Statistics -->
+            <div id="statsSection" class="stats-grid">
+                <!-- Stats will be loaded here -->
+            </div>
+            
+            <!-- Filters -->
+            <div class="filter-section">
+                <h5 class="mb-3">
+                    <i class="fas fa-filter me-2"></i>Filters
+                </h5>
+                <div class="row">
+                    <div class="col-md-3">
+                        <label class="form-label">Status</label>
+                        <select class="form-select" id="statusFilter" onchange="loadDuplicates()">
+                            <option value="all">All Status</option>
+                            <option value="pending" selected>Pending Review</option>
+                            <option value="deleted">Deleted</option>
+                            <option value="kept">Kept</option>
+                            <option value="review_later">Review Later</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" id="typeFilter" onchange="loadDuplicates()">
+                            <option value="all">All Types</option>
+                            <option value="exact">Exact Duplicates</option>
+                            <option value="similar">Similar Duplicates</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Per Page</label>
+                        <select class="form-select" id="perPageFilter" onchange="loadDuplicates()">
+                            <option value="10">10 per page</option>
+                            <option value="20" selected>20 per page</option>
+                            <option value="50">50 per page</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3 d-flex align-items-end">
+                        <button class="btn btn-outline-danger w-100" onclick="bulkDeletePending()">
+                            <i class="fas fa-trash me-2"></i>Bulk Delete Pending
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Loading State -->
+            <div id="loadingState" class="text-center py-4" style="display: none;">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Loading duplicates...</p>
+            </div>
+            
+            <!-- Duplicates List -->
+            <div id="duplicatesList">
+                <!-- Duplicates will be loaded here -->
+            </div>
+            
+            <!-- Pagination -->
+            <div id="paginationSection" class="d-flex justify-content-center mt-4">
+                <!-- Pagination will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Action Modal -->
+    <div class="modal fade" id="actionModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="actionModalTitle">
+                        <i class="fas fa-cog me-2"></i>Duplicate Action
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Action</label>
+                        <select class="form-select" id="actionSelect">
+                            <option value="delete">Delete Duplicate</option>
+                            <option value="keep">Keep Duplicate</option>
+                            <option value="review_later">Review Later</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Notes (Optional)</label>
+                        <textarea class="form-control" id="actionNotes" rows="3" 
+                                  placeholder="Add any notes about this action..."></textarea>
+                    </div>
+                    <div id="actionPreview" class="alert alert-info">
+                        <!-- Action preview will be shown here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="executeAction()">
+                        <i class="fas fa-check me-1"></i>Execute Action
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentDuplicateId = null;
+        let currentPage = 1;
+        
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStats();
+            loadDuplicates();
+        });
+        
+        function loadStats() {
+            fetch('/api/admin/duplicates/stats')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayStats(data.stats);
+                    } else {
+                        console.error('Failed to load stats:', data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading stats:', error);
+                });
+        }
+        
+        function displayStats(stats) {
+            const statsSection = document.getElementById('statsSection');
+            
+            statsSection.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-number">${stats.total_duplicates}</div>
+                    <div class="text-muted">Total Duplicates</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number text-warning">${stats.pending_review}</div>
+                    <div class="text-muted">Pending Review</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number text-danger">${stats.exact_duplicates}</div>
+                    <div class="text-muted">Exact Duplicates</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number text-info">${stats.similar_duplicates}</div>
+                    <div class="text-muted">Similar Duplicates</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number text-success">${stats.deleted}</div>
+                    <div class="text-muted">Deleted</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.storage_size_mb} MB</div>
+                    <div class="text-muted">Storage Used</div>
+                </div>
+            `;
+        }
+        
+        function loadDuplicates(page = 1) {
+            currentPage = page;
+            const status = document.getElementById('statusFilter').value;
+            const type = document.getElementById('typeFilter').value;
+            const perPage = document.getElementById('perPageFilter').value;
+            
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('duplicatesList').innerHTML = '';
+            
+            const params = new URLSearchParams({
+                page: page,
+                per_page: perPage,
+                status: status,
+                type: type
+            });
+            
+            fetch(`/api/admin/duplicates/list?${params}`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('loadingState').style.display = 'none';
+                    
+                    if (data.success) {
+                        displayDuplicates(data.duplicates);
+                        displayPagination(data.pagination);
+                    } else {
+                        document.getElementById('duplicatesList').innerHTML = `
+                            <div class="alert alert-danger">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                Error loading duplicates: ${data.error}
+                            </div>
+                        `;
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('loadingState').style.display = 'none';
+                    console.error('Error loading duplicates:', error);
+                });
+        }
+        
+        function displayDuplicates(duplicates) {
+            const duplicatesList = document.getElementById('duplicatesList');
+            
+            if (duplicates.length === 0) {
+                duplicatesList.innerHTML = `
+                    <div class="text-center py-5">
+                        <i class="fas fa-check-circle text-success" style="font-size: 5rem;"></i>
+                        <h4 class="mt-3 text-success">No Duplicates Found</h4>
+                        <p class="text-muted">All duplicates have been reviewed or none exist with current filters</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            duplicatesList.innerHTML = duplicates.map(duplicate => {
+                const typeColor = duplicate.duplicate_type === 'exact' ? 'danger' : 'warning';
+                const statusColor = {
+                    'pending': 'warning',
+                    'deleted': 'success',
+                    'kept': 'info',
+                    'review_later': 'secondary'
+                }[duplicate.status] || 'secondary';
+                
+                const duplicateInfo = duplicate.duplicate_info || {};
+                const matches = duplicateInfo.matches || [];
+                
+                return `
+                    <div class="duplicate-card">
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-2">
+                                    <div class="text-center">
+                                        ${duplicate.file_exists ? 
+                                            `<img src="/duplicates/${duplicate.id}/thumbnail" 
+                                                 alt="${duplicate.original_filename}" 
+                                                 class="duplicate-thumbnail"
+                                                 onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgdmlld0JveD0iMCAwIDEyMCAxMjAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiNmOGY5ZmEiLz48cGF0aCBkPSJNNDAgNDBINDBWODBIODBWNDBINDBaIiBmaWxsPSIjNmM3NTdkIi8+PC9zdmc+'">`
+                                            :
+                                            `<div class="duplicate-thumbnail bg-light d-flex align-items-center justify-content-center">
+                                                <i class="fas fa-file-image text-muted" style="font-size: 2rem;"></i>
+                                            </div>`
+                                        }
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6 class="mb-2">${duplicate.original_filename}</h6>
+                                    <div class="mb-2">
+                                        <span class="badge bg-${typeColor} duplicate-type-badge me-2">
+                                            ${duplicate.duplicate_type.toUpperCase()}
+                                        </span>
+                                        <span class="badge bg-${statusColor} status-badge">
+                                            ${duplicate.status.replace('_', ' ').toUpperCase()}
+                                        </span>
+                                    </div>
+                                    <div class="small text-muted">
+                                        <div><i class="fas fa-calendar me-1"></i>Created: ${new Date(duplicate.created_timestamp).toLocaleDateString()}</div>
+                                        <div><i class="fas fa-folder me-1"></i>Path: ${duplicate.duplicate_path}</div>
+                                        ${matches.length > 0 ? 
+                                            `<div><i class="fas fa-link me-1"></i>Matches: ${matches.length} similar photo(s)</div>` 
+                                            : ''
+                                        }
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="action-buttons">
+                                        ${duplicate.status === 'pending' ? `
+                                            <button class="btn btn-sm btn-danger" onclick="showActionModal('${duplicate.id}', 'delete')">
+                                                <i class="fas fa-trash me-1"></i>Delete
+                                            </button>
+                                            <button class="btn btn-sm btn-success" onclick="showActionModal('${duplicate.id}', 'keep')">
+                                                <i class="fas fa-check me-1"></i>Keep
+                                            </button>
+                                            <button class="btn btn-sm btn-secondary" onclick="showActionModal('${duplicate.id}', 'review_later')">
+                                                <i class="fas fa-clock me-1"></i>Later
+                                            </button>
+                                        ` : `
+                                            <span class="text-muted">
+                                                <i class="fas fa-check-circle me-1"></i>
+                                                ${duplicate.action_taken ? duplicate.action_taken.toUpperCase() : 'REVIEWED'}
+                                            </span>
+                                        `}
+                                        <button class="btn btn-sm btn-outline-info" onclick="viewDuplicateDetails('${duplicate.id}')">
+                                            <i class="fas fa-eye me-1"></i>Details
+                                        </button>
+                                    </div>
+                                    ${duplicate.notes ? `
+                                        <div class="mt-2">
+                                            <small class="text-muted">
+                                                <i class="fas fa-sticky-note me-1"></i>
+                                                ${duplicate.notes}
+                                            </small>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function displayPagination(pagination) {
+            const paginationSection = document.getElementById('paginationSection');
+            
+            if (pagination.total_pages <= 1) {
+                paginationSection.innerHTML = '';
+                return;
+            }
+            
+            let paginationHtml = '<nav><ul class="pagination">';
+            
+            // Previous button
+            if (pagination.page > 1) {
+                paginationHtml += `
+                    <li class="page-item">
+                        <a class="page-link" href="#" onclick="loadDuplicates(${pagination.page - 1})">
+                            <i class="fas fa-chevron-left"></i> Previous
+                        </a>
+                    </li>
+                `;
+            }
+            
+            // Page numbers
+            for (let i = 1; i <= pagination.total_pages; i++) {
+                if (i === pagination.page) {
+                    paginationHtml += `<li class="page-item active"><span class="page-link">${i}</span></li>`;
+                } else if (i <= 3 || i > pagination.total_pages - 3 || Math.abs(i - pagination.page) <= 1) {
+                    paginationHtml += `<li class="page-item"><a class="page-link" href="#" onclick="loadDuplicates(${i})">${i}</a></li>`;
+                } else if (i === 4 || i === pagination.total_pages - 3) {
+                    paginationHtml += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+                }
+            }
+            
+            // Next button
+            if (pagination.page < pagination.total_pages) {
+                paginationHtml += `
+                    <li class="page-item">
+                        <a class="page-link" href="#" onclick="loadDuplicates(${pagination.page + 1})">
+                            Next <i class="fas fa-chevron-right"></i>
+                        </a>
+                    </li>
+                `;
+            }
+            
+            paginationHtml += '</ul></nav>';
+            paginationSection.innerHTML = paginationHtml;
+        }
+        
+        function showActionModal(duplicateId, suggestedAction) {
+            currentDuplicateId = duplicateId;
+            
+            document.getElementById('actionSelect').value = suggestedAction;
+            document.getElementById('actionNotes').value = '';
+            updateActionPreview();
+            
+            const modal = new bootstrap.Modal(document.getElementById('actionModal'));
+            modal.show();
+        }
+        
+        function updateActionPreview() {
+            const action = document.getElementById('actionSelect').value;
+            const preview = document.getElementById('actionPreview');
+            
+            const actionDescriptions = {
+                'delete': {
+                    text: 'This will permanently delete the duplicate file from storage.',
+                    class: 'alert-danger',
+                    icon: 'fas fa-trash'
+                },
+                'keep': {
+                    text: 'This will mark the duplicate as kept and move it to processed photos.',
+                    class: 'alert-success',
+                    icon: 'fas fa-check'
+                },
+                'review_later': {
+                    text: 'This will mark the duplicate for later review without taking action.',
+                    class: 'alert-info',
+                    icon: 'fas fa-clock'
+                }
+            };
+            
+            const desc = actionDescriptions[action];
+            preview.className = `alert ${desc.class}`;
+            preview.innerHTML = `
+                <i class="${desc.icon} me-2"></i>
+                ${desc.text}
+            `;
+        }
+        
+        function executeAction() {
+            if (!currentDuplicateId) return;
+            
+            const action = document.getElementById('actionSelect').value;
+            const notes = document.getElementById('actionNotes').value;
+            
+            fetch(`/api/admin/duplicates/${currentDuplicateId}/action`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: action,
+                    notes: notes
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Close modal
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('actionModal'));
+                    modal.hide();
+                    
+                    // Refresh data
+                    loadStats();
+                    loadDuplicates(currentPage);
+                    
+                    // Show success message
+                    showSuccessMessage(data.message);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error executing action:', error);
+                alert('Error executing action: ' + error.message);
+            });
+        }
+        
+        function bulkDeletePending() {
+            if (!confirm('Are you sure you want to delete ALL pending duplicates? This action cannot be undone.')) {
+                return;
+            }
+            
+            // This would require a separate API endpoint for bulk operations
+            alert('Bulk delete functionality would be implemented here');
+        }
+        
+        function viewDuplicateDetails(duplicateId) {
+            // Navigate to detailed view or show modal with full duplicate info
+            alert(`View details for duplicate ${duplicateId} - detailed view would be implemented here`);
+        }
+        
+        function refreshData() {
+            loadStats();
+            loadDuplicates(currentPage);
+        }
+        
+        function showSuccessMessage(message) {
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-success alert-dismissible fade show position-fixed';
+            alert.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            alert.innerHTML = `
+                <i class="fas fa-check-circle me-2"></i>${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            document.body.appendChild(alert);
+            
+            setTimeout(() => {
+                if (alert.parentNode) {
+                    alert.parentNode.removeChild(alert);
+                }
+            }, 3000);
+        }
+        
+        // Update action preview when selection changes
+        document.getElementById('actionSelect').addEventListener('change', updateActionPreview);
+    </script>
+</body>
+</html>
