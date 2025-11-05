@@ -59,9 +59,86 @@ def upload_photos():
     creates JPEG thumbnails using Pillow when possible.
     """
     files = request.files.getlist('photos')
+
+    # Determine if the client expects JSON early so we can return a JSON
+    # error instead of an HTML redirect when using the UI's import-path flow.
+    accept = request.headers.get('Accept', '')
+    wants_json = 'application/json' in accept or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+    # Support a server-side "import from path" flow: the client may send an
+    # `import_path` field instead of uploading files directly. When provided
+    # and confirmed, walk the given directory and build an in-memory file list
+    # so the rest of the upload pipeline can proceed unchanged.
+    import_path = request.form.get('import_path') or None
+    import_confirmed = request.form.get('confirmed') == 'true'
+
+    if not files and import_path:
+        # If the client didn't confirm, respond with a clear JSON error when
+        # the client expects JSON, otherwise redirect with a flash message.
+        if not import_confirmed:
+            if wants_json:
+                return jsonify({'success': False, 'message': 'Server-side import not confirmed', 'error': 'confirm import by setting confirmed=true'}), 400
+            else:
+                flash('You must confirm server-side import before proceeding.', 'danger')
+                return redirect(url_for('main_dashboard'))
+
+        storage = get_storage()
+        # Resolve the requested path to an absolute path and ensure it's
+        # under the storage base path to avoid importing arbitrary system files.
+        try:
+            abs_req = os.path.abspath(import_path)
+            base = os.path.abspath(storage.base_path)
+            # Safety: require the requested path to be within storage.base_path
+            if not os.path.commonpath([abs_req, base]) == base:
+                if wants_json:
+                    return jsonify({'success': False, 'message': 'Import path must be inside storage base path', 'error': 'import_path out of allowed base'}), 403
+                else:
+                    flash('Import path must be inside the storage base path.', 'danger')
+                    return redirect(url_for('main_dashboard'))
+
+            if not os.path.isdir(abs_req):
+                if wants_json:
+                    return jsonify({'success': False, 'message': 'Import path not found or not a directory', 'error': 'import_path not found'}), 404
+                else:
+                    flash('Import path not found or not a directory.', 'danger')
+                    return redirect(url_for('main_dashboard'))
+
+            # Build a small in-memory file-like list with .read() and .filename
+            class _LocalFile:
+                def __init__(self, data, filename):
+                    self._data = data
+                    self.filename = filename
+                def read(self):
+                    return self._data
+
+            files = []
+            for entry in sorted(os.listdir(abs_req)):
+                fp = os.path.join(abs_req, entry)
+                if os.path.isfile(fp):
+                    try:
+                        with open(fp, 'rb') as fh:
+                            b = fh.read()
+                        files.append(_LocalFile(b, entry))
+                    except Exception:
+                        logger.exception('Failed to read file during import: %s', fp)
+                        # skip unreadable files
+                        continue
+        except Exception as e:
+            logger.exception('Server-side import failed for path %s: %s', import_path, e)
+            if wants_json:
+                return jsonify({'success': False, 'message': 'Import failed', 'error': str(e)}), 500
+            else:
+                flash(f'Import failed: {e}', 'danger')
+                return redirect(url_for('main_dashboard'))
+
     if not files:
-        flash('No files selected for upload.', 'danger')
-        return redirect(url_for('main_dashboard'))
+        # No files provided via upload or import. Respect client's expectation
+        # for JSON vs HTML when returning the error.
+        if wants_json:
+            return jsonify({'success': False, 'message': 'No files selected for upload', 'error': 'no_files'}), 400
+        else:
+            flash('No files selected for upload.', 'danger')
+            return redirect(url_for('main_dashboard'))
 
     storage = get_storage()
     saved = 0
@@ -657,7 +734,7 @@ def admin_functions():
                     total += os.path.getsize(fp)
         return total
     storage_size = get_dir_size(storage.base_path)
-    return render_template('admin_functions.html', db_size=db_size, storage_size=storage_size)
+    return render_template('admin_functions.html', db_size=db_size, storage_size=storage_size, db_info=db_info)
 
 
 @app.route('/gallery')
@@ -726,7 +803,18 @@ def gallery():
             where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
             count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
             cursor.execute(count_q, params)
-            total = cursor.fetchone()[0]
+            # cursor.fetchone() may return a mapping (RealDictCursor) or a tuple.
+            row = cursor.fetchone()
+            if not row:
+                total = 0
+            elif isinstance(row, dict):
+                # take the first column value regardless of its name
+                try:
+                    total = int(next(iter(row.values())) or 0)
+                except Exception:
+                    total = 0
+            else:
+                total = int(row[0] or 0)
 
             offset = (page - 1) * per_page
             q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT %s OFFSET %s"
@@ -772,7 +860,16 @@ def gallery():
             where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
             count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
             cursor.execute(count_q, params)
-            total = cursor.fetchone()[0]
+            row = cursor.fetchone()
+            if not row:
+                total = 0
+            elif isinstance(row, dict):
+                try:
+                    total = int(next(iter(row.values())) or 0)
+                except Exception:
+                    total = 0
+            else:
+                total = int(row[0] or 0)
 
             offset = (page - 1) * per_page
             q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT ? OFFSET ?"
@@ -1222,6 +1319,29 @@ if __name__ == '__main__':
     logger.info("%s", "=" * 50)
     # Configure logging level from environment using centralized initializer
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    # If DB_TYPE is not explicitly set (or set to auto), prefer Postgres when
+    # Postgres environment variables are present. This allows the running
+    # application to use the Postgres backend by default when a Postgres
+    # instance is available without requiring the caller to set DB_TYPE.
+    try:
+        db_type_env = os.environ.get('DB_TYPE', 'auto').lower()
+        # Look for common Postgres env vars — if present and DB_TYPE is not
+        # explicitly 'local', switch to Postgres at startup.
+        pg_env_present = any(os.environ.get(k) for k in ('DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'PG_DSN', 'DATABASE_URL'))
+        if db_type_env in ('', 'auto') and pg_env_present:
+            try:
+                # Import here to avoid top-level import cycles during testing
+                from database_config import switch_database, init_database
+                switched = switch_database('postgres')
+                if switched:
+                    init_database()
+                    logger.info('Auto-switched database to Postgres based on environment.')
+            except Exception:
+                logger.exception('Failed to auto-configure Postgres at startup — continuing with configured DB type.')
+    except Exception:
+        # Protect startup from any unexpected environ parsing errors
+        logger.exception('Unexpected error while detecting DB environment')
+
     init_logging(level=log_level)
     logging.info('Flask app is starting on http://localhost:5001')
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'

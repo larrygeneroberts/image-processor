@@ -25,9 +25,17 @@
 </div>
 
 <!-- Visible marker to confirm template changes: remove or update as desired -->
+<!-- Template revision notice removed. Showing live database type & version instead. -->
 <div class="mt-2">
-    <div class="alert alert-secondary small mb-3">
-        <strong>Template revision:</strong> admin_functions.html — updated by tooling on 2025-11-03
+    <div class="alert alert-info small mb-3">
+        <strong>Database:</strong>
+        {% if db_info is defined %}
+            <span class="ms-1">Type: <code>{{ db_info.type or 'unknown' }}</code></span>
+            <span class="ms-3">Version: <code>{{ db_info.version or 'unknown' }}</code></span>
+            <span class="ms-3">Status: <code>{{ db_info.status or 'unknown' }}</code></span>
+        {% else %}
+            <span class="ms-1">Not available</span>
+        {% endif %}
     </div>
 </div>
 

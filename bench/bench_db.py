@@ -48,23 +48,53 @@ def ensure_db(path):
 
 def ensure_pg_db(conn):
     cur = conn.cursor()
-    cur.execute('''
-    CREATE TABLE IF NOT EXISTS photos (
-        id TEXT PRIMARY KEY,
-        original_filename TEXT,
-        local_path TEXT,
-        file_path TEXT,
-        file_size INTEGER,
-        content_hash TEXT,
-        upload_timestamp TIMESTAMP,
-        photo_taken_date TIMESTAMP,
-        image_width INTEGER,
-        image_height INTEGER,
-        thumbnail BYTEA
-    )
-    ''')
-    conn.commit()
-    cur.close()
+    try:
+        cur.execute('''
+        CREATE TABLE IF NOT EXISTS photos (
+            id TEXT PRIMARY KEY,
+            original_filename TEXT,
+            local_path TEXT,
+            file_path TEXT,
+            file_size INTEGER,
+            content_hash TEXT,
+            upload_timestamp TIMESTAMP,
+            photo_taken_date TIMESTAMP,
+            image_width INTEGER,
+            image_height INTEGER,
+            thumbnail BYTEA
+        )
+        ''')
+        conn.commit()
+    except Exception as e:
+        # Permissions may prevent table creation (e.g. limited DB user). Check if the
+        # table already exists using information_schema; if not, raise a clearer
+        # error advising to run the init script as a superuser or grant CREATE
+        # privileges.
+            # After a failed DDL the transaction may be aborted; rollback so we can
+            # run diagnostic queries on the same connection.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='photos')")
+                exists = cur.fetchone()[0]
+                if not exists:
+                    raise SystemExit(
+                        '\nERROR: unable to create `photos` table in Postgres.\n'
+                        'This typically means the DB user lacks CREATE TABLE privileges.\n'
+                        'You can either run `scripts/init_postgres.py` as a Postgres superuser\n'
+                        'or grant the necessary privileges to the user.\n'
+                        'Example (psql as superuser):\n'
+                        "  GRANT CREATE ON SCHEMA public TO photo_user;\n"
+                        'Alternatively, run the init script as a superuser to create the schema.\n'
+                    )
+                # table exists; continue
+            except Exception:
+                # If the existence check itself failed, provide the original error context
+                raise SystemExit(f"ERROR while ensuring photos table: {e}")
+    finally:
+        cur.close()
     return conn
 
 
