@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Simple benchmarking tools for DB insert/query performance.
+
+Usage examples:
+  python3 bench/bench_db.py --db-file /tmp/test.db --num 10000 --mode insert
+  python3 bench/bench_db.py --db-file /tmp/test.db --mode query
+
+This script focuses on SQLite by default to let you simulate scaling to
+~10k images locally. It creates a minimal `photos` table compatible with
+the app and measures insert throughput and query timings.
+"""
+import argparse
+import sqlite3
+import time
+import os
+import random
+import string
+from datetime import datetime, timezone
+
+
+def random_id():
+    return ''.join(random.choices('0123456789abcdef', k=64))
+
+
+def ensure_db(path):
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS photos (
+        id TEXT PRIMARY KEY,
+        original_filename TEXT,
+        local_path TEXT,
+        file_path TEXT,
+        file_size INTEGER,
+        content_hash TEXT,
+        upload_timestamp TEXT,
+        photo_taken_date TEXT,
+        image_width INTEGER,
+        image_height INTEGER,
+        thumbnail BLOB
+    )
+    ''')
+    conn.commit()
+    return conn
+
+
+def insert_rows(conn, n, batch=500):
+    cur = conn.cursor()
+    start = time.time()
+    inserted = 0
+    for i in range(0, n, batch):
+        batch_rows = min(batch, n - i)
+        params = []
+        for j in range(batch_rows):
+            pid = random_id()
+            fname = f"img_{i+j}.jpg"
+            rel = os.path.join('originals', fname)
+            size = random.randint(10_000, 2_000_000)
+            ch = random_id()
+            now = datetime.now(timezone.utc).isoformat()
+            taken = now
+            w = random.randint(400, 4000)
+            h = random.randint(300, 3000)
+            params.append((pid, fname, rel, rel, size, ch, now, taken, w, h, None))
+        cur.executemany('''INSERT OR REPLACE INTO photos
+            (id, original_filename, local_path, file_path, file_size, content_hash, upload_timestamp, photo_taken_date, image_width, image_height, thumbnail)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', params)
+        conn.commit()
+        inserted += batch_rows
+    duration = time.time() - start
+    print(f"Inserted {inserted} rows in {duration:.2f}s ({inserted/duration:.1f} rows/s)")
+
+
+def run_queries(conn, iterations=100):
+    cur = conn.cursor()
+    timings = {}
+
+    # Count total
+    start = time.time()
+    cur.execute('SELECT COUNT(*) FROM photos')
+    total = cur.fetchone()[0]
+    timings['count'] = time.time() - start
+
+    # Content-hash lookup (random existing or non-existing)
+    sample_hash = None
+    start = time.time()
+    cur.execute('SELECT content_hash FROM photos LIMIT 1')
+    row = cur.fetchone()
+    if row:
+        sample_hash = row[0]
+    timings['sample_lookup_prep'] = time.time() - start
+
+    # Run many lookups
+    lookups = iterations
+    start = time.time()
+    for i in range(lookups):
+        h = sample_hash if sample_hash and i % 2 == 0 else random_id()
+        cur.execute('SELECT id FROM photos WHERE content_hash = ? LIMIT 1', (h,))
+        _ = cur.fetchone()
+    timings['content_lookup_mean'] = (time.time() - start) / lookups
+
+    # Grouping query (strftime/COALESCE mimic)
+    start = time.time()
+    cur.execute("SELECT strftime('%Y', COALESCE(photo_taken_date, upload_timestamp)) AS year, strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) AS month, COUNT(*) FROM photos GROUP BY year, month")
+    groups = cur.fetchall()
+    timings['grouping'] = time.time() - start
+
+    print(f"Total rows: {total}")
+    print(f"Timings: {timings}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--db-file', default=':memory:', help='SQLite DB file (default: in-memory)')
+    parser.add_argument('--num', type=int, default=10000, help='Number of rows to insert for insert mode')
+    parser.add_argument('--mode', choices=['insert', 'query', 'all'], default='all')
+    parser.add_argument('--batch', type=int, default=500, help='Insert batch size')
+    parser.add_argument('--iterations', type=int, default=200, help='Query iterations for lookups')
+    args = parser.parse_args()
+
+    conn = ensure_db(args.db_file)
+
+    if args.mode in ('insert', 'all'):
+        print(f"Inserting {args.num} rows into {args.db_file} (batch={args.batch})")
+        insert_rows(conn, args.num, batch=args.batch)
+
+    if args.mode in ('query', 'all'):
+        print('Running query benchmarks...')
+        run_queries(conn, iterations=args.iterations)
+
+    conn.close()
+
+
+if __name__ == '__main__':
+    main()
