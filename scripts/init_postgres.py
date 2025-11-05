@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS duplicate_photos (
 print('Creating indexes (concurrently recommended in production)...')
 # In a transaction, CREATE INDEX CONCURRENTLY is not allowed. For a simple
 # init script we'll create normal indexes. In production use CONCURRENTLY.
+# Ensure expected columns exist (be tolerant of partial/previous schema states)
+try:
+    cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS content_hash TEXT")
+    cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS upload_timestamp TIMESTAMP")
+    cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS photo_taken_date TIMESTAMP")
+    cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS local_path TEXT")
+except Exception:
+    # If the ALTER TABLE statements fail, continue — index creation may still work
+    pass
+
+# Create indexes
 cur.execute('CREATE INDEX IF NOT EXISTS idx_photos_upload_timestamp ON photos (upload_timestamp)')
 cur.execute('CREATE INDEX IF NOT EXISTS idx_photos_taken_date ON photos (photo_taken_date)')
 cur.execute('CREATE INDEX IF NOT EXISTS idx_photos_content_hash ON photos (content_hash)')
