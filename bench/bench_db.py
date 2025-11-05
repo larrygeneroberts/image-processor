@@ -11,6 +11,8 @@ the app and measures insert throughput and query timings.
 """
 import argparse
 import sqlite3
+import psycopg2
+import psycopg2.extras
 import time
 import os
 import random
@@ -44,8 +46,33 @@ def ensure_db(path):
     return conn
 
 
-def insert_rows(conn, n, batch=500):
+def ensure_pg_db(conn):
     cur = conn.cursor()
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS photos (
+        id TEXT PRIMARY KEY,
+        original_filename TEXT,
+        local_path TEXT,
+        file_path TEXT,
+        file_size INTEGER,
+        content_hash TEXT,
+        upload_timestamp TIMESTAMP,
+        photo_taken_date TIMESTAMP,
+        image_width INTEGER,
+        image_height INTEGER,
+        thumbnail BYTEA
+    )
+    ''')
+    conn.commit()
+    cur.close()
+    return conn
+
+
+def insert_rows(conn, n, batch=500, db_type='sqlite'):
+    if db_type == 'sqlite':
+        cur = conn.cursor()
+    else:
+        cur = conn.cursor()
     start = time.time()
     inserted = 0
     for i in range(0, n, batch):
@@ -62,16 +89,22 @@ def insert_rows(conn, n, batch=500):
             w = random.randint(400, 4000)
             h = random.randint(300, 3000)
             params.append((pid, fname, rel, rel, size, ch, now, taken, w, h, None))
-        cur.executemany('''INSERT OR REPLACE INTO photos
-            (id, original_filename, local_path, file_path, file_size, content_hash, upload_timestamp, photo_taken_date, image_width, image_height, thumbnail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', params)
+        if db_type == 'sqlite':
+            cur.executemany('''INSERT OR REPLACE INTO photos
+                (id, original_filename, local_path, file_path, file_size, content_hash, upload_timestamp, photo_taken_date, image_width, image_height, thumbnail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', params)
+        else:
+            cur.executemany('''INSERT INTO photos
+                (id, original_filename, local_path, file_path, file_size, content_hash, upload_timestamp, photo_taken_date, image_width, image_height, thumbnail)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET original_filename = EXCLUDED.original_filename''', params)
         conn.commit()
         inserted += batch_rows
     duration = time.time() - start
     print(f"Inserted {inserted} rows in {duration:.2f}s ({inserted/duration:.1f} rows/s)")
 
 
-def run_queries(conn, iterations=100):
+def run_queries(conn, iterations=100, db_type='sqlite'):
     cur = conn.cursor()
     timings = {}
 
@@ -95,13 +128,19 @@ def run_queries(conn, iterations=100):
     start = time.time()
     for i in range(lookups):
         h = sample_hash if sample_hash and i % 2 == 0 else random_id()
-        cur.execute('SELECT id FROM photos WHERE content_hash = ? LIMIT 1', (h,))
+        if db_type == 'sqlite':
+            cur.execute('SELECT id FROM photos WHERE content_hash = ? LIMIT 1', (h,))
+        else:
+            cur.execute('SELECT id FROM photos WHERE content_hash = %s LIMIT 1', (h,))
         _ = cur.fetchone()
     timings['content_lookup_mean'] = (time.time() - start) / lookups
 
     # Grouping query (strftime/COALESCE mimic)
     start = time.time()
-    cur.execute("SELECT strftime('%Y', COALESCE(photo_taken_date, upload_timestamp)) AS year, strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) AS month, COUNT(*) FROM photos GROUP BY year, month")
+    if db_type == 'sqlite':
+        cur.execute("SELECT strftime('%Y', COALESCE(photo_taken_date, upload_timestamp)) AS year, strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) AS month, COUNT(*) FROM photos GROUP BY year, month")
+    else:
+        cur.execute("SELECT EXTRACT(YEAR FROM COALESCE(photo_taken_date, upload_timestamp)) AS year, EXTRACT(MONTH FROM COALESCE(photo_taken_date, upload_timestamp)) AS month, COUNT(*) FROM photos GROUP BY year, month")
     groups = cur.fetchall()
     timings['grouping'] = time.time() - start
 
@@ -116,17 +155,29 @@ def main():
     parser.add_argument('--mode', choices=['insert', 'query', 'all'], default='all')
     parser.add_argument('--batch', type=int, default=500, help='Insert batch size')
     parser.add_argument('--iterations', type=int, default=200, help='Query iterations for lookups')
+    parser.add_argument('--db-type', choices=['sqlite', 'postgres'], default='sqlite', help='Database type to benchmark')
+    parser.add_argument('--pg-dsn', default=None, help='Postgres DSN (psycopg2) e.g. postgresql://user:pass@host:port/dbname')
     args = parser.parse_args()
 
-    conn = ensure_db(args.db_file)
+    db_type = args.db_type
+
+    if db_type == 'sqlite':
+        conn = ensure_db(args.db_file)
+    else:
+        # Connect to Postgres
+        dsn = args.pg_dsn or os.environ.get('PG_DSN') or os.environ.get('DATABASE_URL')
+        if not dsn:
+            raise SystemExit('Postgres DSN required via --pg-dsn or PG_DSN/DATABASE_URL env var')
+        conn = psycopg2.connect(dsn)
+        ensure_pg_db(conn)
 
     if args.mode in ('insert', 'all'):
-        print(f"Inserting {args.num} rows into {args.db_file} (batch={args.batch})")
-        insert_rows(conn, args.num, batch=args.batch)
+        print(f"Inserting {args.num} rows into {args.db_file if db_type=='sqlite' else dsn} (batch={args.batch})")
+        insert_rows(conn, args.num, batch=args.batch, db_type=db_type)
 
     if args.mode in ('query', 'all'):
         print('Running query benchmarks...')
-        run_queries(conn, iterations=args.iterations)
+        run_queries(conn, iterations=args.iterations, db_type=db_type)
 
     conn.close()
 
