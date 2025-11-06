@@ -18,8 +18,9 @@ jobs:
     name: Run tests
     runs-on: ubuntu-latest
     strategy:
+      # Use a single, supported Python version to avoid runner lookup errors
       matrix:
-        python-version: [3.10, 3.11]
+        python-version: [3.11]
 
     steps:
       - name: Checkout
