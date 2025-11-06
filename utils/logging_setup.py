@@ -1,10 +1,10 @@
 import logging
 import os
 from copy import deepcopy
-from typing import Any, Iterable
+from typing import Any, Iterable, Union
 
 
-def init_logging(level: str | int = None, default_format: str | None = None) -> None:
+def init_logging(level: Union[str, int] = None, default_format: Union[str, None] = None) -> None:
     """Initialize global logging configuration from environment.
 
     Accepts keyword `level` for backward compatibility with callers that pass
@@ -74,7 +74,7 @@ def init_logging(level: str | int = None, default_format: str | None = None) -> 
     root._configured_by_logging_setup = True
 
 
-def get_logger(name: str | None = None) -> logging.Logger:
+def get_logger(name: Union[str, None] = None) -> logging.Logger:
     return logging.getLogger(name if name else __name__)
 
 
@@ -91,7 +91,7 @@ def _redact_value(v: Any, placeholder: str = 'REDACTED') -> Any:
 DEFAULT_SENSITIVE_KEYS = {'password', 'passwd', 'secret', 'token', 'api_key', 'access_key', 'secret_key', 'db_password', 'authorization'}
 
 
-def redact_dict(obj: Any, keys_to_redact: Iterable[str] | None = None, placeholder: str = 'REDACTED') -> Any:
+def redact_dict(obj: Any, keys_to_redact: Union[Iterable[str], None] = None, placeholder: str = 'REDACTED') -> Any:
     """Deep-redact sensitive keys in nested dicts/lists.
 
     Keys are matched case-insensitively. The function is defensive and will

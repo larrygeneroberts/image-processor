@@ -22,7 +22,7 @@ except Exception:
             lvl = getattr(logging, level.upper()) if isinstance(level, str) else level
         except Exception:
             lvl = logging.INFO
-        logging.basicConfig(level=getattr(logging, lvl, logging.INFO))
+        logging.basicConfig(level=lvl)
 
     def redact_dict(d, keys_to_redact=None):
         return d
@@ -996,7 +996,12 @@ def gallery():
 @app.route('/api/stats')
 def api_stats():
     """API endpoint for statistics"""
-    db_stats = get_database_stats()
+    # Use the database_config helper to get DB info (connection status, version, etc.)
+    try:
+        from database_config import get_database_info
+        db_stats = get_database_info()
+    except Exception:
+        db_stats = {'status': 'unknown'}
 
     return jsonify({
         'database': db_stats,
@@ -1043,26 +1048,52 @@ def serve_thumbnail(photo_id):
                     import base64
                     from flask import Response
                     
-                    # Handle escaped hex string thumbnail data
+                    # Handle escaped hex string or bytes-like thumbnail data
                     try:
                         from flask import Response
-                        
-                        # Convert escaped hex string to binary data using the correct method
-                        if isinstance(thumbnail_data, str) and thumbnail_data.startswith('\\x'):
-                            # Remove all \x prefixes and convert hex string to bytes
+
+                        binary_thumbnail = None
+
+                        # Common cases: bytes/bytearray
+                        if isinstance(thumbnail_data, (bytes, bytearray)):
+                            binary_thumbnail = bytes(thumbnail_data)
+                        # memoryview or other objects exposing tobytes()
+                        elif hasattr(thumbnail_data, 'tobytes'):
+                            try:
+                                binary_thumbnail = thumbnail_data.tobytes()
+                            except Exception:
+                                # Fall through to other decoding attempts
+                                binary_thumbnail = None
+                        # Escaped Postgres hex string representation
+                        elif isinstance(thumbnail_data, str) and thumbnail_data.startswith('\\x'):
                             hex_string = thumbnail_data.replace('\\x', '')
                             binary_thumbnail = bytes.fromhex(hex_string)
-                        elif isinstance(thumbnail_data, bytes):
-                            binary_thumbnail = thumbnail_data
+                        # Base64-encoded string (handle missing padding)
+                        elif isinstance(thumbnail_data, str):
+                            try:
+                                s = thumbnail_data
+                                # Add padding if necessary
+                                padding = len(s) % 4
+                                if padding:
+                                    s += '=' * (4 - padding)
+                                binary_thumbnail = base64.b64decode(s)
+                            except Exception:
+                                binary_thumbnail = None
                         else:
-                            # Fallback: try base64 decode
-                            binary_thumbnail = base64.b64decode(thumbnail_data)
-                        
+                            # Try a last-ditch conversion to bytes
+                            try:
+                                binary_thumbnail = bytes(thumbnail_data)
+                            except Exception:
+                                binary_thumbnail = None
+
+                        if not binary_thumbnail:
+                            raise ValueError('Could not decode thumbnail data')
+
                         response = Response(binary_thumbnail, mimetype='image/jpeg')
                         response.headers['Cache-Control'] = 'public, max-age=3600'
                         response.headers['Content-Disposition'] = f'inline; filename="thumb_{filename}"'
                         return response
-                        
+
                     except Exception as decode_error:
                         logger.exception("Thumbnail decode error for %s: %s", photo_id, decode_error)
                         return '', 500
@@ -1146,6 +1177,26 @@ def serve_full_photo(photo_id):
             if local_path:
                 try:
                     data = storage.read_photo(local_path)
+                    # Attempt to normalize image orientation using EXIF info so full images display correctly
+                    try:
+                        from PIL import Image, ImageOps
+                        import io as _io
+                        img = Image.open(_io.BytesIO(data))
+                        img = ImageOps.exif_transpose(img)
+                        out_io = _io.BytesIO()
+                        # Preserve format when possible
+                        fmt = img.format or 'JPEG'
+                        img.save(out_io, format=fmt, quality=92)
+                        out_bytes = out_io.getvalue()
+                        data = out_bytes
+                        # adjust mime if format detected
+                        if fmt.lower() == 'png':
+                            mime = 'image/png'
+                        else:
+                            mime = 'image/jpeg'
+                    except Exception:
+                        # If Pillow isn't available or processing fails, fall back to raw bytes
+                        pass
                     # detect mime type
                     # try to detect image type; fall back to filename extension or jpeg
                     try:
@@ -1282,6 +1333,98 @@ def admin_clear_database():
     return redirect(url_for('admin_functions'))
 
 
+@app.route('/admin/thumbnail/regenerate', methods=['POST'])
+def admin_regenerate_thumbnail():
+    """Admin endpoint: regenerate and store thumbnail for a single photo id.
+
+    Expects form or JSON body with 'photo_id'. Returns JSON with status.
+    """
+    photo_id = None
+    try:
+        if request.is_json:
+            photo_id = request.json.get('photo_id')
+        if not photo_id:
+            photo_id = request.form.get('photo_id')
+    except Exception:
+        photo_id = request.form.get('photo_id')
+
+    if not photo_id:
+        return jsonify({'error': 'photo_id required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'database unavailable'}), 503
+
+    try:
+        db_cfg = get_db_config()
+        # Lookup photo record
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if row:
+                local_path = row.get('local_path') or None
+                taken_date = row.get('photo_taken_date')
+            else:
+                return jsonify({'error': 'photo not found'}), 404
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = ?', (photo_id,))
+            row = cur.fetchone()
+            if row:
+                local_path = row[0]
+                taken_date = row[1] if len(row) > 1 else None
+            else:
+                return jsonify({'error': 'photo not found'}), 404
+
+        storage = get_storage()
+        try:
+            photo_data = storage.read_photo(local_path)
+        except FileNotFoundError:
+            return jsonify({'error': 'stored photo file not found'}), 404
+        except Exception as e:
+            logger.exception('Error reading photo for %s: %s', photo_id, e)
+            return jsonify({'error': 'could not read photo'}), 500
+
+        try:
+            # import generator locally to avoid top-level cycles
+            from local_thumbnail_generator import generate_thumbnail
+            thumb_data = generate_thumbnail(photo_data)
+            if not thumb_data:
+                return jsonify({'error': 'thumbnail generation failed'}), 500
+        except Exception as e:
+            logger.exception('Thumbnail generation failed for %s: %s', photo_id, e)
+            return jsonify({'error': 'thumbnail generation error'}), 500
+
+        # Store thumbnail file on disk
+        try:
+            storage.store_thumbnail(thumb_data, photo_id, taken_date)
+        except Exception:
+            logger.exception('Failed to store thumbnail file for %s', photo_id)
+
+        # Update DB
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET thumbnail = %s, processed = TRUE WHERE id = %s', (thumb_data, photo_id))
+            else:
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET thumbnail = ?, processed = 1 WHERE id = ?', (thumb_data, photo_id))
+            conn.commit()
+        except Exception as e:
+            logger.exception('Failed to update DB thumbnail for %s: %s', photo_id, e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({'error': 'failed to update database'}), 500
+
+        return jsonify({'status': 'ok', 'photo_id': photo_id}), 200
+
+    finally:
+        if conn:
+            return_db_connection(conn)
 @app.route('/admin/storage/usage')
 def admin_storage_usage():
     """Return JSON with storage usage: total bytes and file count under storage.base_path."""

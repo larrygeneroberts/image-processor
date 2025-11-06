@@ -147,6 +147,19 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Quick thumbnail regenerate tool -->
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <div class="card p-3">
+                                    <h6 class="mb-2"><i class="fas fa-sync me-2"></i>Regenerate Thumbnail (Admin)</h6>
+                                    <div class="input-group">
+                                        <input type="text" id="regenPhotoId" class="form-control" placeholder="Enter photo id (UUID)">
+                                        <button class="btn btn-outline-primary" id="regenThumbBtn" onclick="triggerRegenerate()">Regenerate</button>
+                                    </div>
+                                    <div id="regenResult" class="mt-2 small text-muted"></div>
+                                </div>
+                            </div>
+                        </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -682,6 +695,48 @@
                     alertDiv.remove();
                 }
             }, 5000);
+        }
+
+        // Trigger thumbnail regeneration from admin UI
+        function triggerRegenerate() {
+            const input = document.getElementById('regenPhotoId');
+            const result = document.getElementById('regenResult');
+            const btn = document.getElementById('regenThumbBtn');
+            if (!input || !btn) return;
+            const photoId = input.value && input.value.trim();
+            if (!photoId) {
+                showAlert('warning', 'Please enter a photo_id to regenerate');
+                return;
+            }
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Regenerating...';
+            result.textContent = '';
+
+            fetch('/admin/thumbnail/regenerate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ photo_id: photoId })
+            })
+            .then(r => r.json().then(j => ({status: r.status, body: j})))
+            .then(({status, body}) => {
+                if (status === 200 && body && body.status === 'ok') {
+                    showAlert('success', `Thumbnail regenerated for ${photoId}`);
+                    result.textContent = `Regenerated thumbnail for ${photoId}`;
+                } else {
+                    const msg = (body && body.error) ? body.error : 'Failed to regenerate thumbnail';
+                    showAlert('danger', msg);
+                    result.textContent = `Error: ${msg}`;
+                }
+            })
+            .catch(err => {
+                console.error('Regenerate error', err);
+                showAlert('danger', 'Network error while regenerating thumbnail');
+                result.textContent = 'Network error';
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = 'Regenerate';
+            });
         }
 
         // Compact Reset DB handler (protected by confirmation)

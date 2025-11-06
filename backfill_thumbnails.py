@@ -25,10 +25,10 @@ def backfill_thumbnails():
         if db_config.get_database_type() == 'postgres':
             from psycopg2.extras import RealDictCursor
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT id, local_path, thumbnail FROM photos')
+            cursor.execute('SELECT id, local_path, thumbnail, photo_taken_date FROM photos')
         else:
             cursor = conn.cursor()
-            cursor.execute('SELECT id, local_path, thumbnail FROM photos')
+            cursor.execute('SELECT id, local_path, thumbnail, photo_taken_date FROM photos')
         rows = cursor.fetchall()
         for row in rows:
             if db_config.get_database_type() == 'postgres':
@@ -49,6 +49,38 @@ def backfill_thumbnails():
             except Exception as e:
                 logger.exception("Could not generate thumbnail for %s: %s", photo_id, e)
                 continue
+            # Also write thumbnail file to storage (so filesystem thumbnails exist)
+            try:
+                # Determine taken_date for directory placement
+                taken_date = None
+                try:
+                    if db_config.get_database_type() == 'postgres':
+                        taken_date = row.get('photo_taken_date')
+                    else:
+                        # SQLite row index: photo_taken_date is at index 3
+                        taken_date = row[3] if len(row) > 3 else None
+                except Exception:
+                    taken_date = None
+                try:
+                    # Normalize taken_date to a datetime when possible so storage
+                    # can create date-based directories. SQLite often returns
+                    # strings for TIMESTAMP fields; attempt to coerce.
+                    from datetime import datetime
+                    td = taken_date
+                    if isinstance(td, str):
+                        try:
+                            td = datetime.fromisoformat(td)
+                        except Exception:
+                            # common fallback format: 'YYYY-MM-DD HH:MM:SS'
+                            try:
+                                td = datetime.strptime(td, '%Y-%m-%d %H:%M:%S')
+                            except Exception:
+                                td = None
+                    storage.store_thumbnail(thumb_data, photo_id, td)
+                except Exception:
+                    logger.exception("Failed to store thumbnail file for %s", photo_id)
+            except Exception:
+                pass
             # Update DB
             try:
                 if db_config.get_database_type() == 'postgres':
