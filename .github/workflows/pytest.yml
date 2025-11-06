@@ -46,4 +46,8 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest -q
+          # Debug: print working directory and list files so CI logs show whether tests are present
+          pwd
+          ls -la
+          # Invoke pytest via the python module to avoid PATH/entrypoint issues
+          python -m pytest -q
