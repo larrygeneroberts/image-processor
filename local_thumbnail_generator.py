@@ -27,6 +27,13 @@ def generate_thumbnail(image_data, max_size=(300, 300)):
     try:
         # Create image from binary data
         image = Image.open(io.BytesIO(image_data))
+        # Apply EXIF orientation (Pillow 6.0+ provides ImageOps.exif_transpose)
+        try:
+            from PIL import ImageOps
+            image = ImageOps.exif_transpose(image)
+        except Exception:
+            # If ImageOps or exif_transpose isn't available, continue without transpose
+            pass
         
         # Convert RGBA to RGB if needed
         if image.mode in ('RGBA', 'LA'):
@@ -63,15 +70,25 @@ def process_photos(max_photos=50):
         storage = get_storage()
         db_config = get_db_config()
         
-        # Get photos without thumbnails
+        # Get photos without thumbnails. Use DB-specific parameter style.
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, local_path, photo_taken_date 
-            FROM photos 
-            WHERE thumbnail IS NULL 
-            AND local_path IS NOT NULL
-            LIMIT %s
-        """, (max_photos,))
+        if db_config.get_database_type() == 'postgres':
+            cursor.execute("""
+                SELECT id, local_path, photo_taken_date 
+                FROM photos 
+                WHERE thumbnail IS NULL 
+                AND local_path IS NOT NULL
+                LIMIT %s
+            """, (max_photos,))
+        else:
+            # SQLite uses ? placeholders
+            cursor.execute("""
+                SELECT id, local_path, photo_taken_date 
+                FROM photos 
+                WHERE thumbnail IS NULL 
+                AND local_path IS NOT NULL
+                LIMIT ?
+            """, (max_photos,))
         
         photos = cursor.fetchall()
         if not photos:
@@ -99,13 +116,21 @@ def process_photos(max_photos=50):
                 # Store thumbnail
                 thumb_path = storage.store_thumbnail(thumb_data, photo_id, taken_date)
                 
-                # Update database
-                cursor.execute("""
-                    UPDATE photos 
-                    SET thumbnail = %s,
-                        processed = TRUE 
-                    WHERE id = %s
-                """, (thumb_data, photo_id))
+                # Update database using DB-specific parameter style
+                if db_config.get_database_type() == 'postgres':
+                    cursor.execute("""
+                        UPDATE photos 
+                        SET thumbnail = %s,
+                            processed = TRUE 
+                        WHERE id = %s
+                    """, (thumb_data, photo_id))
+                else:
+                    cursor.execute("""
+                        UPDATE photos 
+                        SET thumbnail = ?,
+                            processed = 1 
+                        WHERE id = ?
+                    """, (thumb_data, photo_id))
                 
                 processed += 1
                 if processed % 10 == 0:

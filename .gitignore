@@ -1,3 +1,79 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+eggs/
+*.egg-info/
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.pytest_cache/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtualenvs
+venv/
+.venv/
+ENV/
+env/
+venv.bak/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+.env.*
+local_settings.py
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+local_photo_analyzer.db
+
+# Application storage (photos/thumbnails etc.)
+photo_storage/
+
+# Logs
+*.log
+/tmp/
+
+# Build/test artifacts
+dist/
+build/
+*.egg-info/
+
+# Coverage and profiling
+.pytest_cache/
+.prof
+
+# Misc
+*.swp
+*.bak
 # PAL Reimagined - Git Ignore File
 
 # Python

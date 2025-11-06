@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      # Use environment variables with sensible defaults. Provide a real .env in production.
+      POSTGRES_USER: "${POSTGRES_USER:-photo_user}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-photo_password}"
+      POSTGRES_DB: "${POSTGRES_DB:-photo_analyzer}"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # Use the configured user/db from env where possible
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-photo_user} -d ${POSTGRES_DB:-photo_analyzer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
