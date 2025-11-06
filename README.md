@@ -48,8 +48,17 @@ export DB_USER=postgres
 export DB_PASSWORD=your-password
 ```
 
-You may also use a `.env` file for local development, but do NOT commit real
-secrets to the repository (the repo `.gitignore` excludes `.env`).
+You may also use a `.env` file for local development. A safe pattern is to
+copy the tracked `.env.example` into a local `.env`, then edit it with your
+secrets (database passwords, Flask secret). Example:
+
+```bash
+cp .env.example .env
+# edit .env and set POSTGRES_PASSWORD and FLASK_SECRET
+```
+
+The repository intentionally ignores `.env` so that real secrets are not
+committed. Do NOT commit `.env` or any file containing production secrets.
 
 ## Application structure (high level)
 
