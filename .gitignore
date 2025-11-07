@@ -156,6 +156,10 @@ test-*.py
 test_*.py
 *_test.py
 
+# Allow repository tests directory to be tracked
+!tests/
+!tests/*.py
+
 # Coverage
 .coverage
 htmlcov/

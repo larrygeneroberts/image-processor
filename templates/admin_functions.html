@@ -13,6 +13,10 @@
                 <div class="form-text small text-muted mt-1">Quick reset posts to server with immediate effect; a typed confirmation form is available here for safer reset.</div>
                 <!-- Typed confirmation form moved into the danger zone -->
                 <form method="post" action="/admin/clear" class="mt-2">
+                    {# CSRF token for Flask-WTF CSRFProtect if enabled #}
+                    {% if csrf_token is defined %}
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                    {% endif %}
                     <div class="input-group input-group-sm">
                         <input type="text" name="confirm" placeholder="Type YES to confirm" class="form-control form-control-sm" required>
                         <button class="btn btn-sm btn-danger" type="submit">Confirm & Clear</button>
@@ -81,9 +85,14 @@ document.addEventListener('DOMContentLoaded', function() {
             quickBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Resetting...';
 
             // Perform POST to the existing /admin/clear endpoint expected by the server
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            const csrfHeader = csrfMeta ? csrfMeta.getAttribute('content') : null;
+            const headers = {'Content-Type': 'application/x-www-form-urlencoded'};
+            if (csrfHeader) headers['X-CSRFToken'] = csrfHeader;
+
             fetch('/admin/clear', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                headers: headers,
                 body: new URLSearchParams({confirm: 'YES'})
             })
             .then(r => {
