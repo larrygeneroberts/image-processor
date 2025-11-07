@@ -20,7 +20,20 @@ if not dsn:
     pw = os.environ.get('DB_PASSWORD', '')
     dsn = f"postgresql://{user}:{pw}@{host}:{port}/{db}"
 
-print(f"Connecting to Postgres DSN: {dsn}")
+# Do not print DSNs or secrets to logs. Print non-sensitive connection info only.
+try:
+    host = host  # keep existing variables in scope for clarity
+except NameError:
+    host = os.environ.get('DB_HOST', 'localhost')
+try:
+    db = db
+except NameError:
+    db = os.environ.get('DB_NAME', 'photo_analyzer')
+try:
+    user = user
+except NameError:
+    user = os.environ.get('DB_USER', 'postgres')
+print(f"Connecting to Postgres host={host} db={db} user={user}")
 conn = psycopg2.connect(dsn)
 cur = conn.cursor()
 

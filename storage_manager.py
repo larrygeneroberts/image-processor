@@ -147,7 +147,18 @@ class StorageManager:
             bytes: Photo data
         """
         full_path = self.get_photo_path(relative_path)
-        with open(full_path, 'rb') as f:
+        # Ensure the resolved path is still within the storage base path
+        try:
+            full_real = os.path.realpath(full_path)
+            base_real = os.path.realpath(self.base_path)
+            # Ensure trailing separator to avoid prefix collisions
+            if not (full_real == base_real or full_real.startswith(base_real + os.sep)):
+                raise FileNotFoundError(f"Invalid photo path: {relative_path}")
+        except Exception:
+            # If validation fails, raise FileNotFoundError for callers to handle
+            raise FileNotFoundError(f"Invalid photo path: {relative_path}")
+
+        with open(full_real, 'rb') as f:
             return f.read()
     
     def delete_photo(self, relative_path):

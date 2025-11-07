@@ -37,9 +37,46 @@ from datetime import datetime, timezone
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from werkzeug.utils import secure_filename
 import re
+from functools import wraps
+
+# Simple admin token decorator: if ADMIN_TOKEN is set in the environment,
+# require callers to provide it via the X-Admin-Token header or the
+# form/json field `admin_token`. In development (FLASK_DEBUG=1) this check
+# is relaxed to avoid blocking local testing when a token isn't configured.
+def require_admin_token(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        admin_token = os.environ.get('ADMIN_TOKEN')
+        debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+        if not admin_token:
+            if debug:
+                # Allow admin access in debug mode when no token is set
+                return fn(*args, **kwargs)
+            # Deny access when token is not configured in production
+            return jsonify({'error': 'admin token not configured'}), 403
+
+        # Look for token in header, JSON body, or form field
+        header = request.headers.get('X-Admin-Token')
+        candidate = None
+        if header:
+            candidate = header
+        else:
+            try:
+                if request.is_json:
+                    candidate = request.json.get('admin_token')
+            except Exception:
+                candidate = None
+            if not candidate:
+                candidate = request.form.get('admin_token')
+
+        if candidate and candidate == admin_token:
+            return fn(*args, **kwargs)
+        return jsonify({'error': 'unauthorized'}), 401
+    return wrapper
 
 # Initialize Flask app
 app = Flask(__name__)
+
 # Load secret key from environment; require a real secret in production.
 secret = os.environ.get('FLASK_SECRET') or os.environ.get('SECRET_KEY')
 if secret:
@@ -48,7 +85,9 @@ else:
     # Development fallback — printed so devs notice. Do NOT use in production.
     app.secret_key = 'dev-secret'
     logger.warning("Using insecure development Flask secret key. Set FLASK_SECRET in production.")
-    # time and datetime already imported at module level
+
+# Limit upload size (50 MB default) to mitigate large file DoS
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024))
 
 @app.route('/upload', methods=['POST'])
 def upload_photos():
@@ -700,6 +739,7 @@ def main_dashboard():
     return render_template('index.html', stats=stats, storage_paths=storage_paths)
 
 @app.route('/admin')
+@require_admin_token
 def admin_functions():
     """Separate admin page for admin functions"""
     
@@ -1091,7 +1131,14 @@ def serve_thumbnail(photo_id):
 
                         response = Response(binary_thumbnail, mimetype='image/jpeg')
                         response.headers['Cache-Control'] = 'public, max-age=3600'
-                        response.headers['Content-Disposition'] = f'inline; filename="thumb_{filename}"'
+                        # Sanitize filename for Content-Disposition
+                        try:
+                            safe_name = secure_filename(filename) if filename else None
+                        except Exception:
+                            safe_name = None
+                        if not safe_name:
+                            safe_name = f"{photo_id}.jpg"
+                        response.headers['Content-Disposition'] = f'inline; filename="{safe_name}"'
                         return response
 
                     except Exception as decode_error:
@@ -1110,7 +1157,13 @@ def serve_thumbnail(photo_id):
                         from flask import Response
                         resp = Response(data, mimetype='image/jpeg')
                         resp.headers['Cache-Control'] = 'public, max-age=3600'
-                        resp.headers['Content-Disposition'] = f'inline; filename="thumb_{thumb_name}"'
+                        try:
+                            safe_name = secure_filename(thumb_name) if thumb_name else None
+                        except Exception:
+                            safe_name = None
+                        if not safe_name:
+                            safe_name = f"{photo_id}.jpg"
+                        resp.headers['Content-Disposition'] = f'inline; filename="{safe_name}"'
                         return resp
             except Exception as fs_err:
                 logger.exception("Filesystem thumbnail lookup failed for %s: %s", photo_id, fs_err)
@@ -1224,8 +1277,17 @@ def serve_full_photo(photo_id):
                     from flask import Response
                     resp = Response(data, mimetype=mime)
                     resp.headers['Cache-Control'] = 'public, max-age=86400'
-                    if filename:
-                        resp.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                    try:
+                        safe_name = secure_filename(filename) if filename else None
+                    except Exception:
+                        safe_name = None
+                    if not safe_name:
+                        # Use id-based fallback and preserve extension guess
+                        ext = '.jpg'
+                        if mime == 'image/png':
+                            ext = '.png'
+                        safe_name = f"{photo_id}{ext}"
+                    resp.headers['Content-Disposition'] = f'inline; filename="{safe_name}"'
                     return resp
                 except FileNotFoundError:
                     # fall through to 404
@@ -1286,6 +1348,7 @@ def health_check():
 
 # Place this before the main block so the route is registered
 @app.route('/admin/clear', methods=['POST'])
+@require_admin_token
 def admin_clear_database():
     from database_config import get_db_connection, return_db_connection, get_db_config
     from storage_manager import get_storage
@@ -1426,6 +1489,7 @@ def admin_regenerate_thumbnail():
         if conn:
             return_db_connection(conn)
 @app.route('/admin/storage/usage')
+@require_admin_token
 def admin_storage_usage():
     """Return JSON with storage usage: total bytes and file count under storage.base_path."""
     try:
