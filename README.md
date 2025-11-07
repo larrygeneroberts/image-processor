@@ -131,7 +131,3 @@ details.
    that rely on column names such as `thumbnail` or `local_path`.
 
 ---
-
-If you want, I can further trim or expand this README (add examples, quick
-API snippets, or an explicit "How to test uploads" section). Once you're
-happy, I can commit the README update and push it to GitHub for you.
