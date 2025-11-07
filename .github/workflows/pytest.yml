@@ -51,6 +51,13 @@ jobs:
           # Debug: print working directory and list files so CI logs show whether tests are present
           pwd
           ls -la
+          echo "Listing tests/ contents (if any):"
+          ls -la tests || true
+          # Print a short preview of each test file to ensure they're not empty/markdown-wrapped
+          for f in tests/*.py; do
+            echo "--- $f ---" || true
+            sed -n '1,12p' "$f" || true
+          done || true
           echo "Python: $(python --version)" 
           echo "Pip packages:"
           pip list --format=columns
