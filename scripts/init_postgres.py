@@ -99,6 +99,22 @@ cur.execute('CREATE INDEX IF NOT EXISTS idx_photos_content_hash ON photos (conte
 cur.execute('CREATE INDEX IF NOT EXISTS idx_faces_photo_id ON faces (photo_id)')
 cur.execute('CREATE INDEX IF NOT EXISTS idx_duplicates_photo1 ON duplicate_photos (photo1_id)')
 
+# Functional index to support queries that order/filter by the "effective"
+# photo date: prefer photo_taken_date when present, otherwise upload_timestamp.
+# This helps queries like YEAR/MONTH grouping and ordering by COALESCE(photo_taken_date, upload_timestamp).
+try:
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_photos_effective_date ON photos (COALESCE(photo_taken_date, upload_timestamp) DESC)")
+except Exception:
+    # Silently ignore if the DB version doesn't support functional/descending indexes
+    pass
+
+# BRIN index on upload_timestamp is useful for very large, append-only tables
+# where range scans on recent uploads are common. It's lightweight to maintain.
+try:
+    cur.execute("CREATE INDEX IF NOT EXISTS brin_photos_upload_timestamp ON photos USING BRIN (upload_timestamp)")
+except Exception:
+    pass
+
 conn.commit()
 cur.close()
 conn.close()

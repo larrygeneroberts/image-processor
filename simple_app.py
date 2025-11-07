@@ -38,6 +38,9 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from werkzeug.utils import secure_filename
 import re
 from functools import wraps
+import base64
+import json
+from typing import Optional, Tuple
 
 # Simple admin token decorator: if ADMIN_TOKEN is set in the environment,
 # require callers to provide it via the X-Admin-Token header or the
@@ -74,6 +77,26 @@ def require_admin_token(fn):
         return jsonify({'error': 'unauthorized'}), 401
     return wrapper
 
+
+def _encode_cursor(effective_dt, pid: str) -> str:
+    """Encode a cursor containing an ISO datetime and id into a URL-safe string."""
+    try:
+        payload = {'d': effective_dt.isoformat() if hasattr(effective_dt, 'isoformat') else str(effective_dt), 'id': pid}
+        b = json.dumps(payload).encode('utf-8')
+        return base64.urlsafe_b64encode(b).decode('ascii')
+    except Exception:
+        return ''
+
+
+def _decode_cursor(cursor: str) -> Optional[Tuple[str, str]]:
+    """Decode a cursor produced by _encode_cursor. Returns (date_iso, id) or None on failure."""
+    try:
+        b = base64.urlsafe_b64decode(cursor.encode('ascii'))
+        payload = json.loads(b.decode('utf-8'))
+        return payload.get('d'), payload.get('id')
+    except Exception:
+        return None
+
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -88,6 +111,16 @@ else:
 
 # Limit upload size (50 MB default) to mitigate large file DoS
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024))
+
+# Initialize CSRF protection if available. This is optional: if the
+# environment doesn't have Flask-WTF installed, we warn and continue.
+try:
+    from flask_wtf import CSRFProtect
+    csrf = CSRFProtect()
+    csrf.init_app(app)
+    logger.info('CSRF protection enabled via Flask-WTF')
+except Exception:
+    logger.warning('Flask-WTF (CSRFProtect) not available; admin forms will not have CSRF protection. Install flask-wtf to enable.')
 
 @app.route('/upload', methods=['POST'])
 def upload_photos():
@@ -804,6 +837,10 @@ def gallery():
         'next_num': None
     }
 
+    # Ensure these are defined for both keyset and offset pagination flows
+    next_cursor = None
+    total = 0
+
     try:
         if db_config.get_database_type() == 'postgres':
             from psycopg2.extras import RealDictCursor
@@ -839,27 +876,94 @@ def gallery():
                     selected_period = {'year': year, 'month': month, 'month_name': datetime(int(year), int(month), 1).strftime('%B')}
                 except Exception:
                     selected_period = {'year': year, 'month': month, 'month_name': None}
+            # Support keyset pagination via ?cursor=<base64> and preserve
+            # offset pagination (page) for backwards compatibility.
+            cursor_param = request.args.get('cursor')
+            if cursor_param:
+                # Keyset pagination: fetch per_page+1 rows to detect next cursor
+                where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
 
-            where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
-            count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
-            cursor.execute(count_q, params)
-            # cursor.fetchone() may return a mapping (RealDictCursor) or a tuple.
-            row = cursor.fetchone()
-            if not row:
-                total = 0
-            elif isinstance(row, dict):
-                # take the first column value regardless of its name
-                try:
-                    total = int(next(iter(row.values())) or 0)
-                except Exception:
-                    total = 0
+                # Build keyset condition
+                decoded = _decode_cursor(cursor_param)
+                keyset_cond = ""
+                params_keyset = list(params)
+                if decoded:
+                    cur_date, cur_id = decoded
+                    # Use COALESCE(photo_taken_date, upload_timestamp) as effective date
+                    keyset_cond = "(COALESCE(photo_taken_date, upload_timestamp) < %s OR (COALESCE(photo_taken_date, upload_timestamp) = %s AND id < %s))"
+                    # For Postgres, pass the ISO string / timestamp; driver will parse
+                    params_keyset.extend([cur_date, cur_date, cur_id])
+                else:
+                    # If decode failed, treat as no cursor (fallback to newest)
+                    keyset_cond = None
+
+                if keyset_cond:
+                    if where_clause:
+                        full_where = where_clause + ' AND ' + keyset_cond
+                    else:
+                        full_where = 'WHERE ' + keyset_cond
+                else:
+                    full_where = where_clause
+
+                q = ("SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp, "
+                     "COALESCE(photo_taken_date, upload_timestamp) AS effective_date "
+                     f"FROM photos {full_where} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC LIMIT %s")
+                params_keyset.append(per_page + 1)
+                cursor.execute(q, params_keyset)
+                rows = cursor.fetchall()
+                # Determine next cursor
+                next_cursor = None
+                if rows and len(rows) > per_page:
+                    # There is another page; take the last row of the returned page
+                    page_rows = rows[:per_page]
+                    last = page_rows[-1]
+                    eff = last.get('effective_date')
+                    last_id = last.get('id')
+                    next_cursor = _encode_cursor(eff, last_id)
+                    rows = page_rows
+                else:
+                    next_cursor = None
             else:
-                total = int(row[0] or 0)
+                where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
+                count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
+                cursor.execute(count_q, params)
+                # cursor.fetchone() may return a mapping (RealDictCursor) or a tuple.
+                row = cursor.fetchone()
+                if not row:
+                    total = 0
+                elif isinstance(row, dict):
+                    # take the first column value regardless of its name
+                    try:
+                        total = int(next(iter(row.values())) or 0)
+                    except Exception:
+                        total = 0
+                else:
+                    total = int(row[0] or 0)
 
-            offset = (page - 1) * per_page
-            q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT %s OFFSET %s"
-            cursor.execute(q, params + [per_page, offset])
-            rows = cursor.fetchall()
+                offset = (page - 1) * per_page
+                q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT %s OFFSET %s"
+                cursor.execute(q, params + [per_page, offset])
+                rows = cursor.fetchall()
+                # If there are more rows than one page and this is the first
+                # page, compute a keyset `next_cursor` so clients can opt-in to
+                # cursor-based navigation without providing a cursor.
+                if page == 1 and total > per_page:
+                    try:
+                        q2 = ("SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp, "
+                              "COALESCE(photo_taken_date, upload_timestamp) AS effective_date "
+                              f"FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC LIMIT %s")
+                        cursor.execute(q2, params + [per_page + 1])
+                        rows2 = cursor.fetchall()
+                        if rows2 and len(rows2) > per_page:
+                            last = rows2[per_page - 1]
+                            # RealDictCursor returns mapping
+                            eff = last.get('effective_date') if isinstance(last, dict) else None
+                            last_id = last.get('id') if isinstance(last, dict) else (last[0] if len(last) > 0 else None)
+                            if eff and last_id:
+                                next_cursor = _encode_cursor(eff, last_id)
+                    except Exception:
+                        # Non-fatal: leave next_cursor as None
+                        pass
 
         else:
             cursor = conn.cursor()
@@ -897,24 +1001,79 @@ def gallery():
                 except Exception:
                     selected_period = {'year': year, 'month': month, 'month_name': None}
 
-            where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
-            count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
-            cursor.execute(count_q, params)
-            row = cursor.fetchone()
-            if not row:
-                total = 0
-            elif isinstance(row, dict):
-                try:
-                    total = int(next(iter(row.values())) or 0)
-                except Exception:
-                    total = 0
-            else:
-                total = int(row[0] or 0)
+            # Support keyset pagination (cursor) while keeping offset pagination
+            cursor_param = request.args.get('cursor')
+            if cursor_param:
+                where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
+                decoded = _decode_cursor(cursor_param)
+                params_keyset = list(params)
+                if decoded:
+                    cur_date, cur_id = decoded
+                    keyset_cond = "(COALESCE(photo_taken_date, upload_timestamp) < ? OR (COALESCE(photo_taken_date, upload_timestamp) = ? AND id < ?))"
+                    params_keyset.extend([cur_date, cur_date, cur_id])
+                else:
+                    keyset_cond = None
 
-            offset = (page - 1) * per_page
-            q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT ? OFFSET ?"
-            cursor.execute(q, params + [per_page, offset])
-            rows = cursor.fetchall()
+                if keyset_cond:
+                    if where_clause:
+                        full_where = where_clause + ' AND ' + keyset_cond
+                    else:
+                        full_where = 'WHERE ' + keyset_cond
+                else:
+                    full_where = where_clause
+
+                q = ("SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp, "
+                     "COALESCE(photo_taken_date, upload_timestamp) AS effective_date "
+                     f"FROM photos {full_where} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC LIMIT ?")
+                params_keyset.append(per_page + 1)
+                cursor.execute(q, params_keyset)
+                rows = cursor.fetchall()
+                next_cursor = None
+                if rows and len(rows) > per_page:
+                    page_rows = rows[:per_page]
+                    last = page_rows[-1]
+                    # sqlite row is a tuple
+                    eff = last[6] if len(last) > 6 else None
+                    last_id = last[0]
+                    next_cursor = _encode_cursor(eff, last_id)
+                    rows = page_rows
+                else:
+                    next_cursor = None
+            else:
+                where_clause = 'WHERE ' + ' AND '.join(where) if where else ''
+                count_q = f"SELECT COUNT(*) FROM photos {where_clause}"
+                cursor.execute(count_q, params)
+                row = cursor.fetchone()
+                if not row:
+                    total = 0
+                elif isinstance(row, dict):
+                    try:
+                        total = int(next(iter(row.values())) or 0)
+                    except Exception:
+                        total = 0
+                else:
+                    total = int(row[0] or 0)
+
+                offset = (page - 1) * per_page
+                q = f"SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC LIMIT ? OFFSET ?"
+                cursor.execute(q, params + [per_page, offset])
+                rows = cursor.fetchall()
+                # Compute keyset next_cursor for first page when more rows exist
+                if page == 1 and total > per_page:
+                    try:
+                        q2 = ("SELECT id, original_filename, photo_taken_date, image_width, image_height, upload_timestamp, "
+                              "COALESCE(photo_taken_date, upload_timestamp) AS effective_date "
+                              f"FROM photos {where_clause} ORDER BY COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC LIMIT ?")
+                        cursor.execute(q2, params + [per_page + 1])
+                        rows2 = cursor.fetchall()
+                        if rows2 and len(rows2) > per_page:
+                            last = rows2[per_page - 1]
+                            eff = last[6] if len(last) > 6 else None
+                            last_id = last[0]
+                            if eff and last_id:
+                                next_cursor = _encode_cursor(eff, last_id)
+                    except Exception:
+                        pass
 
         # Normalize rows into photo dicts
         for r in rows:
@@ -960,12 +1119,22 @@ def gallery():
             })
 
         # Pagination metadata
-        pagination['total'] = total
-        pagination['total_pages'] = max(1, (total + per_page - 1) // per_page)
-        pagination['has_prev'] = page > 1
-        pagination['has_next'] = page < pagination['total_pages']
-        pagination['prev_num'] = page - 1 if pagination['has_prev'] else None
-        pagination['next_num'] = page + 1 if pagination['has_next'] else None
+        if next_cursor is not None:
+            # Keyset pagination: total pages are unknown; expose next_cursor for the client
+            pagination['total'] = None
+            pagination['total_pages'] = None
+            pagination['has_prev'] = page > 1
+            pagination['has_next'] = True if next_cursor else False
+            pagination['prev_num'] = None
+            pagination['next_num'] = None
+            pagination['next_cursor'] = next_cursor
+        else:
+            pagination['total'] = total
+            pagination['total_pages'] = max(1, (total + per_page - 1) // per_page)
+            pagination['has_prev'] = page > 1
+            pagination['has_next'] = page < pagination['total_pages']
+            pagination['prev_num'] = page - 1 if pagination['has_prev'] else None
+            pagination['next_num'] = page + 1 if pagination['has_next'] else None
 
     except Exception as e:
         logger.exception("Error loading gallery: %s", e)
