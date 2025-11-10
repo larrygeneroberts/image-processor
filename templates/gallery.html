@@ -211,17 +211,35 @@
             background: rgba(0, 0, 0, 0.7);
             border-radius: 10px;
         }
+
+        /* Slider tick labels */
+        .slider-ticks {
+            display: flex;
+            gap: 0;
+            margin-top: 0.5rem;
+            font-size: 0.78rem;
+            color: #6c757d;
+        }
+
+        .slider-ticks span {
+            flex: 1 1 0;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding: 0 4px;
+        }
     </style>
 </head>
 <body>
     <div class="container-fluid p-4">
         <div class="main-container p-4">
             <!-- Header -->
-            <div class="gallery-header">
+                <div class="gallery-header">
                 <h1 class="display-4 fw-bold mb-3">
                     <i class="fas fa-images me-3"></i>Photo Gallery
                 </h1>
-                <p class="lead mb-0">
+                <p id="gallerySubtitle" class="lead mb-0">
                     {% if selected_period %}
                         Viewing {{ selected_period.month_name }} {{ selected_period.year }}
                     {% else %}
@@ -266,32 +284,209 @@
             </div>
             {% endif %}
             
-            <!-- Month/Year Selector -->
+            <!-- Month/Year Selector (slider) -->
             <div class="month-selector">
                 <h5 class="mb-3">
                     <i class="fas fa-calendar-alt me-2"></i>Select Month & Year
                 </h5>
-                
+
                 {% if available_periods %}
-                    <div class="row">
-                        {% for period in available_periods %}
-                            <div class="col-lg-3 col-md-4 col-sm-6 mb-3">
-                                <a href="{{ url_for('gallery', year=period.year, month=period.month) }}" 
-                                   class="period-btn {% if selected_period and selected_period.year == period.year and selected_period.month == period.month %}active{% endif %}">
-                                    <div class="period-name">{{ period.display_name }}</div>
-                                    <div class="photo-count">{{ period.photo_count }} photos</div>
-                                </a>
-                            </div>
-                        {% endfor %}
-                    </div>
-                    
-                    {% if selected_period %}
-                        <div class="text-center mt-3">
-                            <a href="{{ url_for('gallery') }}" class="btn btn-outline-secondary">
-                                <i class="fas fa-times me-2"></i>Clear Selection
-                            </a>
+                    <div id="periodSliderContainer">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <small class="text-muted">Earliest</small>
+                            <div id="sliderCurrentLabel" class="text-center fw-semibold"></div>
+                            <small class="text-muted">Newest</small>
                         </div>
-                    {% endif %}
+
+                        <!-- slider input -->
+                        <input id="periodRange" type="range" min="0" max="0" value="0" class="form-range" style="width:100%;">
+
+                        <!-- ticks will be inserted here -->
+                        <div id="sliderTicks" class="slider-ticks" aria-hidden="true"></div>
+
+                        <div class="d-flex justify-content-between mt-2">
+                            <small id="sliderLeftLabel" class="text-muted"></small>
+                            <small id="sliderRightLabel" class="text-muted"></small>
+                        </div>
+
+                        <div class="text-center mt-3">
+                            <button id="goToPeriodBtn" class="btn btn-primary">View Selected Period</button>
+                            <a href="{{ url_for('gallery') }}" class="btn btn-outline-secondary ms-2">Clear Selection</a>
+                        </div>
+                    </div>
+
+                    <script>
+                        // Build a JS array of periods from the server-provided `available_periods`.
+                        // Any missing year or year < 1972 will be mapped to 1972 so those photos appear in the earliest bucket.
+                        const periods = [
+                            {% for p in available_periods %}
+                                {
+                                    year: {% if p.year is none or p.year < 1972 %}1972{% else %}{{ p.year }}{% endif %},
+                                    month: {% if p.month is none %}1{% else %}{{ p.month }}{% endif %},
+                                    display_name: {{ p.display_name|tojson }},
+                                    photo_count: {{ p.photo_count }}
+                                }{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        ];
+
+                        // Sort earliest -> newest
+                        periods.sort((a, b) => (a.year - b.year) || (a.month - b.month));
+
+                        const range = document.getElementById('periodRange');
+                        const leftLabel = document.getElementById('sliderLeftLabel');
+                        const rightLabel = document.getElementById('sliderRightLabel');
+                        const currentLabel = document.getElementById('sliderCurrentLabel');
+                        const goBtn = document.getElementById('goToPeriodBtn');
+
+                        function formatLabel(p) {
+                            return `${p.display_name} (${p.photo_count} photos)`;
+                        }
+
+                        // Simple debounce helper to avoid navigating on every tiny change
+                        function debounce(fn, wait) {
+                            let t = null;
+                            return function(...args) {
+                                if (t) clearTimeout(t);
+                                t = setTimeout(() => fn.apply(this, args), wait);
+                            };
+                        }
+
+                        if (periods.length === 0) {
+                            document.getElementById('periodSliderContainer').innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h5>No photos found</h5><p>Upload some photos to see them organized by month and year</p><a href="/" class="btn btn-primary"><i class="fas fa-upload me-2"></i>Upload Photos</a></div>';
+                        } else {
+                            range.min = 0;
+                            range.max = periods.length - 1;
+
+                            // Determine selected index from server-side selected_period if present
+                            const selectedYear = {% if selected_period %}{% if selected_period.year is none or selected_period.year < 1972 %}1972{% else %}{{ selected_period.year }}{% endif %}{% else %}null{% endif %};
+                            const selectedMonth = {% if selected_period %}{% if selected_period.month is none %}1{% else %}{{ selected_period.month }}{% endif %}{% else %}null{% endif %};
+
+                            let selectedIndex = 0;
+                            if (selectedYear !== null && selectedMonth !== null) {
+                                for (let i = 0; i < periods.length; i++) {
+                                    if (periods[i].year === selectedYear && periods[i].month === selectedMonth) {
+                                        selectedIndex = i;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            range.value = selectedIndex;
+                            leftLabel.textContent = `${periods[0].display_name}`;
+                            rightLabel.textContent = `${periods[periods.length - 1].display_name}`;
+                            currentLabel.textContent = formatLabel(periods[range.value]);
+
+                            // Update preview label while dragging
+                            range.addEventListener('input', (e) => {
+                                const idx = parseInt(e.target.value, 10);
+                                currentLabel.textContent = formatLabel(periods[idx]);
+                            });
+                            // Navigate when the user releases the slider (mouse up / change / touchend)
+                            async function fetchAndReplace(year, month, idx) {
+                                try {
+                                    const resp = await fetch(`/gallery?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+                                        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'text/html' },
+                                        cache: 'no-store'
+                                    });
+                                    if (!resp.ok) {
+                                        // fall back to full navigation when fetch fails
+                                        window.location.href = `/gallery?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`;
+                                        return;
+                                    }
+                                    const text = await resp.text();
+                                    const parser = new DOMParser();
+                                    const doc = parser.parseFromString(text, 'text/html');
+                                    const newPhotos = doc.getElementById('photosArea');
+                                    if (newPhotos) {
+                                        const cur = document.getElementById('photosArea');
+                                        if (cur) {
+                                            cur.innerHTML = newPhotos.innerHTML;
+                                        }
+                                    } else {
+                                        // If the returned HTML doesn't include the photosArea, fallback to full navigation
+                                        window.location.href = `/gallery?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`;
+                                        return;
+                                    }
+                                    // Update subtitle to show selected month name nicely
+                                    try {
+                                        const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                                        const mName = monthNames[(month - 1) >= 0 && (month - 1) < 12 ? (month - 1) : 0];
+                                        const subtitle = document.getElementById('gallerySubtitle');
+                                        if (subtitle) subtitle.textContent = `Viewing ${mName} ${year}`;
+                                    } catch (e) { /* ignore */ }
+                                    // Update history so the URL reflects selection
+                                    try {
+                                        const newUrl = `/gallery?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`;
+                                        history.pushState({ year: year, month: month }, '', newUrl);
+                                    } catch (e) { /* ignore */ }
+                                } catch (e) {
+                                    console.error('AJAX gallery fetch failed, navigating full page', e);
+                                    window.location.href = `/gallery?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`;
+                                }
+                            }
+
+                            function navigateIndex(idx) {
+                                const p = periods[idx];
+                                const year = (typeof p.year === 'number' && p.year >= 1972) ? p.year : 1972;
+                                const month = (typeof p.month === 'number' && p.month >= 1 && p.month <= 12) ? p.month : 1;
+                                fetchAndReplace(year, month, idx);
+                            }
+
+                            range.addEventListener('change', (e) => {
+                                const idx = parseInt(e.target.value, 10);
+                                navigateIndex(idx);
+                            });
+                            // For better UX, also listen for mouseup/touchend so dragging then releasing triggers navigation
+                            range.addEventListener('mouseup', (e) => {
+                                const idx = parseInt(range.value, 10);
+                                navigateIndex(idx);
+                            });
+                            range.addEventListener('touchend', (e) => {
+                                const idx = parseInt(range.value, 10);
+                                navigateIndex(idx);
+                            });
+
+                            // Keep the explicit button as a fallback for slow connections
+                            goBtn.addEventListener('click', () => {
+                                const idx = parseInt(range.value, 10);
+                                navigateIndex(idx);
+                            });
+                            // Allow double-click to jump to earliest
+                            leftLabel.addEventListener('dblclick', () => { range.value = 0; currentLabel.textContent = formatLabel(periods[0]); navigateIndex(0); });
+
+                            // Build tick labels underneath the slider (max ~12 visible ticks)
+                            (function buildTicks() {
+                                const ticksContainer = document.getElementById('sliderTicks');
+                                if (!ticksContainer) return;
+                                const maxTicks = 12;
+                                const n = periods.length;
+                                const indices = new Set();
+                                indices.add(0);
+                                indices.add(n - 1);
+                                const slots = Math.min(maxTicks, Math.max(2, n));
+                                for (let i = 1; i < slots - 1; i++) {
+                                    const idx = Math.round(i * (n - 1) / (slots - 1));
+                                    indices.add(idx);
+                                }
+                                const sorted = Array.from(indices).sort((a, b) => a - b);
+                                ticksContainer.innerHTML = '';
+                                for (const idx of sorted) {
+                                    const sp = document.createElement('span');
+                                    sp.textContent = periods[idx].display_name;
+                                    sp.title = periods[idx].display_name + ` (${periods[idx].photo_count} photos)`;
+                                    sp.dataset.idx = idx;
+                                    sp.style.cursor = 'pointer';
+                                    sp.addEventListener('click', (e) => {
+                                        range.value = idx;
+                                        currentLabel.textContent = formatLabel(periods[idx]);
+                                        navigateIndex(idx);
+                                    });
+                                    ticksContainer.appendChild(sp);
+                                }
+                            })();
+                        }
+                    </script>
+
                 {% else %}
                     <div class="empty-state">
                         <i class="fas fa-calendar-times"></i>
@@ -305,7 +500,8 @@
             </div>
             
             <!-- Photo Grid -->
-            {% if photos %}
+                {% if photos %}
+                <div id="photosArea">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h4>
                         <i class="fas fa-images me-2"></i>
@@ -314,7 +510,7 @@
                     <span class="badge bg-primary fs-6">{{ pagination.total }} photos</span>
                 </div>
                 
-                <div class="photo-grid">
+                <div id="photoGrid" class="photo-grid">
                     {% for photo in photos %}
                         <div class="photo-card" onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')">
                             <img src="/photo/{{ photo.id }}/thumbnail" 
@@ -349,7 +545,7 @@
                 
                 <!-- Pagination -->
                     {% if (pagination.total_pages and pagination.total_pages > 1) or pagination.next_cursor %}
-                    <div class="pagination-wrapper" {% if pagination.next_cursor %}data-next-cursor="{{ pagination.next_cursor }}"{% endif %}>
+                    <div id="paginationWrapper" class="pagination-wrapper" {% if pagination.next_cursor %}data-next-cursor="{{ pagination.next_cursor }}"{% endif %}>
                         <nav aria-label="Photo gallery pagination">
                             <ul class="pagination justify-content-center">
                                 {% if pagination.next_cursor %}
@@ -419,7 +615,9 @@
                         {% endif %}
                     </div>
                 {% endif %}
+                </div>
             {% elif selected_period %}
+                <div id="photosArea">
                 <div class="empty-state">
                     <i class="fas fa-calendar-times"></i>
                     <h4>No photos found</h4>
@@ -427,6 +625,7 @@
                     <a href="{{ url_for('gallery') }}" class="btn btn-outline-primary">
                         <i class="fas fa-arrow-left me-2"></i>Choose Different Month
                     </a>
+                </div>
                 </div>
             {% endif %}
         </div>
