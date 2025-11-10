@@ -34,8 +34,9 @@ import io
 import hashlib
 import time
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 import re
 from functools import wraps
 import base64
@@ -51,12 +52,24 @@ def require_admin_token(fn):
     def wrapper(*args, **kwargs):
         admin_token = os.environ.get('ADMIN_TOKEN')
         debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+        # If user has a valid session flag, allow access
+        if session.get('is_admin'):
+            return fn(*args, **kwargs)
+
         if not admin_token:
             if debug:
                 # Allow admin access in debug mode when no token is set
                 return fn(*args, **kwargs)
-            # Deny access when token is not configured in production
-            return jsonify({'error': 'admin token not configured'}), 403
+            # If the client expects JSON (XHR/API) return JSON error; otherwise
+            # redirect browser users to the admin login prompt so they can enter
+            # a simple password to get a session cookie.
+            accept = request.headers.get('Accept', '')
+            is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+            wants_json = 'application/json' in accept or is_xhr or request.is_json
+            if wants_json:
+                return jsonify({'error': 'admin token not configured'}), 403
+            else:
+                return redirect(url_for('admin_login', next=request.path))
 
         # Look for token in header, JSON body, or form field
         header = request.headers.get('X-Admin-Token')
@@ -73,9 +86,27 @@ def require_admin_token(fn):
                 candidate = request.form.get('admin_token')
 
         if candidate and candidate == admin_token:
+            # set session so browser users don't need to send header on every request
+            try:
+                session['is_admin'] = True
+            except Exception:
+                pass
             return fn(*args, **kwargs)
-        return jsonify({'error': 'unauthorized'}), 401
+        # If request expects JSON return JSON error, otherwise redirect to login
+        accept = request.headers.get('Accept', '')
+        is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        wants_json = 'application/json' in accept or is_xhr or request.is_json
+        if wants_json:
+            return jsonify({'error': 'unauthorized'}), 401
+        else:
+            return redirect(url_for('admin_login', next=request.path))
     return wrapper
+
+
+
+
+
+
 
 
 def _encode_cursor(effective_dt, pid: str) -> str:
@@ -109,8 +140,27 @@ else:
     app.secret_key = 'dev-secret'
     logger.warning("Using insecure development Flask secret key. Set FLASK_SECRET in production.")
 
-# Limit upload size (50 MB default) to mitigate large file DoS
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024))
+# Limit upload size. Default changed to allow much larger uploads while
+# remaining configurable via the MAX_CONTENT_LENGTH environment variable.
+# Value is in bytes. You can override this in production via env vars.
+# Default chosen here: 200 MB to accommodate large image batches or high-
+# resolution images. Set MAX_CONTENT_LENGTH in the environment to change it.
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 200 * 1024 * 1024))
+
+# Global upload limits (number of files per request)
+DEFAULT_MAX_UPLOAD_FILES = int(os.environ.get('MAX_UPLOAD_FILES', 50))
+
+
+@app.context_processor
+def inject_upload_limits():
+    """Inject upload-related limits into all templates so client-side scripts
+    can read them (e.g. to prevent selecting too many files).
+    """
+    try:
+        max_bytes = app.config.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024)
+        return {'max_upload_files': DEFAULT_MAX_UPLOAD_FILES, 'max_upload_bytes': max_bytes}
+    except Exception:
+        return {'max_upload_files': 50, 'max_upload_bytes': 50 * 1024 * 1024}
 
 # Initialize CSRF protection if available. This is optional: if the
 # environment doesn't have Flask-WTF installed, we warn and continue.
@@ -122,6 +172,44 @@ try:
 except Exception:
     logger.warning('Flask-WTF (CSRFProtect) not available; admin forms will not have CSRF protection. Install flask-wtf to enable.')
 
+
+# Simple admin login/logout routes (browser-friendly password prompt)
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    next_url = request.args.get('next') or request.form.get('next') or url_for('admin_functions')
+    admin_token = os.environ.get('ADMIN_TOKEN')
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if admin_token:
+            if password == admin_token:
+                session['is_admin'] = True
+                flash('Signed in to admin.', 'success')
+                return redirect(next_url)
+            else:
+                flash('Invalid password.', 'danger')
+                return redirect(url_for('admin_login', next=next_url))
+        else:
+            if debug:
+                session['is_admin'] = True
+                flash('Signed in to admin (debug mode).', 'success')
+                return redirect(next_url)
+            # Admin token not set in production: present the login page (no flash)
+            return redirect(url_for('admin_login', next=next_url))
+
+    return render_template('admin_login.html', next=next_url)
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    try:
+        session.pop('is_admin', None)
+    except Exception:
+        pass
+    flash('Signed out of admin session.', 'info')
+    return redirect(url_for('main_dashboard'))
+
 @app.route('/upload', methods=['POST'])
 def upload_photos():
     """Simple upload handler: store uploaded photos and generate thumbnails.
@@ -131,6 +219,18 @@ def upload_photos():
     creates JPEG thumbnails using Pillow when possible.
     """
     files = request.files.getlist('photos')
+
+    # Enforce a maximum number of files per upload to avoid overloading the
+    # server (configured via MAX_UPLOAD_FILES env var or DEFAULT_MAX_UPLOAD_FILES).
+    max_files = int(os.environ.get('MAX_UPLOAD_FILES', DEFAULT_MAX_UPLOAD_FILES))
+    if files and len(files) > max_files:
+        msg = f'Cannot upload more than {max_files} files at once. You selected {len(files)}.'
+        logger.warning('Upload rejected: too many files selected (%d > %d)', len(files), max_files)
+        if wants_json := ('application/json' in request.headers.get('Accept', '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'):
+            return jsonify({'success': False, 'message': msg, 'error': 'too_many_files', 'limit': max_files}), 413
+        else:
+            flash(msg, 'danger')
+            return redirect(url_for('main_dashboard'))
 
     # Determine if the client expects JSON early so we can return a JSON
     # error instead of an HTML redirect when using the UI's import-path flow.
@@ -218,10 +318,43 @@ def upload_photos():
 
     for file in files:
         raw_filename = file.filename or 'unnamed'
-        # Sanitize filename to prevent path traversal and unsafe chars
-        safe_filename = secure_filename(raw_filename) or 'unnamed'
+        # Keep the raw filename (it may include a relative path when the
+        # client selected a directory). For display and DB fields, use a
+        # sanitized basename, but pass the original relative path to
+        # storage so subdirectory structure can be preserved.
+        try:
+            display_basename = secure_filename(os.path.basename(raw_filename)) or 'unnamed'
+        except Exception:
+            display_basename = 'unnamed'
+        # Keep a compatible name used throughout the function
+        safe_filename = display_basename
         try:
             data = file.read()
+
+            # If a single uploaded file exceeds the configured per-file limit,
+            # save it to a review directory (processed/too_large) for manual
+            # inspection instead of attempting normal processing which may
+            # fail or consume excessive resources. This avoids losing the
+            # file while keeping the upload flow robust.
+            per_file_limit = int(os.environ.get('MAX_FILE_SIZE_BYTES', app.config.get('MAX_CONTENT_LENGTH', 12 * 1024 * 1024)))
+            if data and len(data) > per_file_limit:
+                try:
+                    storage = get_storage()
+                    rel_review = storage.store_review_file(data, raw_filename)
+                    results.append({
+                        'filename': safe_filename,
+                        'success': True,
+                        'message': 'Saved for manual review: file too large',
+                        'photo_id': None,
+                        'local_path': rel_review,
+                        'too_large': True
+                    })
+                    # Skip normal processing for this file
+                    continue
+                except Exception as e:
+                    logger.exception("Failed to save too-large file for review %s: %s", raw_filename, e)
+                    results.append({'filename': safe_filename, 'success': False, 'message': f'Failed to save too-large file: {e}', 'photo_id': None, 'local_path': None})
+                    continue
 
             # Pre-compute hash so we can check duplicates before writing files
             photo_id = hashlib.sha256(data).hexdigest()
@@ -428,6 +561,17 @@ def upload_photos():
                         # If content-based fallback fails, don't block the upload
                         pass
 
+            # Ensure any temporary DB connections used for duplicate checks are returned
+            try:
+                if conn_for_checks:
+                    try:
+                        return_db_connection(conn_for_checks)
+                    except Exception:
+                        pass
+                    conn_for_checks = None
+            except Exception:
+                pass
+
             # Try to extract taken date and image object
             taken_date = None
             img = None
@@ -496,7 +640,10 @@ def upload_photos():
 
             # Store original photo on disk (use sanitized filename)
             try:
-                rel_path = storage.store_photo(data, safe_filename, taken_date=taken_date)
+                # Pass the raw filename (which may contain subdirs) to storage
+                # so it can create subdirectories under the date folder. Use
+                # display_basename for logs/messages.
+                rel_path = storage.store_photo(data, raw_filename, taken_date=taken_date)
             except Exception as e:
                 logger.exception("Failed to store photo %s: %s", raw_filename, e)
                 db_result = {'filename': raw_filename, 'success': False, 'message': f'Failed to store: {e}', 'photo_id': photo_id, 'local_path': None}
@@ -509,6 +656,14 @@ def upload_photos():
             try:
                 if img:
                     from PIL import Image
+                    try:
+                        # Apply EXIF orientation so thumbnails have correct rotation
+                        from PIL import ImageOps
+                        img = ImageOps.exif_transpose(img)
+                    except Exception:
+                        # If Pillow/ImageOps isn't available or exif_transpose fails,
+                        # continue without changing orientation.
+                        pass
                     thumb = img.copy()
                     thumb.thumbnail((300, 300))
                     # Convert images with alpha/transparency to RGB with white
@@ -1722,4 +1877,36 @@ if __name__ == '__main__':
     logging.info('Flask app is starting on http://localhost:5001')
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     app.run(host='0.0.0.0', port=5001, debug=debug_mode)
+
+
+# Global error handler: return JSON for large payload errors when client expects JSON/XHR
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_entity_too_large(error):
+    """Handle Werkzeug's RequestEntityTooLarge (413) and return JSON for XHR/JSON clients.
+
+    This avoids the browser-side JSON.parse error when Flask/Werkzeug returns the
+    default HTML error page for oversized multipart bodies.
+    """
+    accept = request.headers.get('Accept', '')
+    is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    wants_json = 'application/json' in accept or is_xhr or request.is_json
+
+    # Log sizes to help debugging oversized uploads
+    try:
+        req_len = request.content_length
+    except Exception:
+        req_len = None
+    max_b = app.config.get('MAX_CONTENT_LENGTH')
+    logger.warning('RequestEntityTooLarge: content_length=%s, MAX_CONTENT_LENGTH=%s', req_len, max_b)
+
+    msg = 'Uploaded data is too large. Please upload fewer files or increase server limits.'
+    if wants_json:
+        return jsonify({'success': False, 'message': msg, 'error': 'request_entity_too_large'}), 413
+    else:
+        # Return a minimal HTML response so normal form submissions get a readable page
+        html = f"""<!doctype html><title>Request Entity Too Large</title>
+        <h1>413 Request Entity Too Large</h1>
+        <p>{msg}</p>
+        <p><a href=\"{url_for('main_dashboard')}\">Return to dashboard</a></p>"""
+        return html, 413
 
