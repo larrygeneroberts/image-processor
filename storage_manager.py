@@ -86,23 +86,62 @@ class StorageManager:
         return new_filename
     
     def store_photo(self, photo_data, filename, taken_date=None):
-        """Store a new photo in date-based directory structure
-        
+        """Store a new photo in date-based directory structure.
+
+        This function accepts filenames that may include a relative path
+        (for example when a client uploads a directory selection). Each
+        path component is sanitized to avoid path traversal or unsafe
+        characters. The file will be stored under the date-based
+        directory inside `originals/` while preserving subdirectories.
+
         Args:
             photo_data (bytes): Raw photo data
-            filename (str): Original filename
+            filename (str): Original filename or relative path
             taken_date (datetime): When photo was taken
-        
+
         Returns:
             str: Relative path to stored photo (from base_path)
         """
-        target_dir = self._get_date_directory(taken_date, self.originals_path)
-        unique_filename = self._generate_unique_filename(filename, target_dir)
+        # Normalize and prevent absolute paths
+        try:
+            # Strip any leading slashes and normalize
+            rel = os.path.normpath(filename).lstrip(os.sep)
+        except Exception:
+            rel = os.path.basename(filename)
+
+        # Split into components and sanitize each component
+        from werkzeug.utils import secure_filename
+        parts = []
+        for p in rel.split(os.sep):
+            if not p or p in ('.', '..'):
+                continue
+            sp = secure_filename(p)
+            if sp:
+                parts.append(sp)
+
+        if not parts:
+            # Fallback to a safe default name
+            parts = ['unnamed.jpg']
+
+        # Last part is the filename, previous parts are subdirectories
+        *subdirs, base_name = parts
+
+        target_base = self._get_date_directory(taken_date, self.originals_path)
+
+        # Build target directory including sanitized subdirectories
+        if subdirs:
+            target_dir = os.path.join(target_base, *subdirs)
+        else:
+            target_dir = target_base
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        unique_filename = self._generate_unique_filename(base_name, target_dir)
         target_path = os.path.join(target_dir, unique_filename)
-        
+
         with open(target_path, 'wb') as f:
             f.write(photo_data)
-        
+
         logger.info(f"Stored photo: {target_path}")
         return os.path.relpath(target_path, self.base_path)
     
@@ -124,6 +163,40 @@ class StorageManager:
             f.write(thumb_data)
         
         logger.info(f"Stored thumbnail: {target_path}")
+        return os.path.relpath(target_path, self.base_path)
+
+    def store_review_file(self, data, filename):
+        """Store a file that was too large for normal processing into the
+        processed/too_large directory for later manual review.
+
+        Args:
+            data (bytes): Raw file bytes
+            filename (str): Original filename provided by the uploader
+
+        Returns:
+            str: Relative path to stored review file (from base_path)
+        """
+        try:
+            from werkzeug.utils import secure_filename
+        except Exception:
+            def secure_filename(x):
+                return os.path.basename(x) if x else 'unknown'
+
+        safe = secure_filename(filename) if filename else 'unknown'
+        # Timestamp prefix to aid manual triage and avoid collisions
+        ts = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        base_name = f"{ts}_{safe}"
+
+        target_dir = os.path.join(self.processed_path, 'too_large')
+        os.makedirs(target_dir, exist_ok=True)
+
+        unique_filename = self._generate_unique_filename(base_name, target_dir)
+        target_path = os.path.join(target_dir, unique_filename)
+
+        with open(target_path, 'wb') as f:
+            f.write(data)
+
+        logger.info(f"Stored review (too-large) file: {target_path}")
         return os.path.relpath(target_path, self.base_path)
     
     def get_photo_path(self, relative_path):

@@ -15,7 +15,21 @@ const PRECACHE_URLS = [
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(APP_CACHE).then(cache => cache.addAll(PRECACHE_URLS))
+    caches.open(APP_CACHE).then(async cache => {
+      // Use fetch+put with Promise.allSettled so a single missing/404 resource
+      // won't abort the install step. This makes the SW more tolerant in dev.
+      const settles = await Promise.allSettled(PRECACHE_URLS.map(async (u) => {
+        try {
+          const resp = await fetch(u);
+          if (!resp || !resp.ok) throw new Error(`Failed to fetch ${u}: ${resp && resp.status}`);
+          await cache.put(u, resp.clone());
+        } catch (e) {
+          // swallow — we don't want precache failures to block install
+          console.warn('SW precache failed for', u, e && e.message);
+        }
+      }));
+      return settles;
+    })
   );
   self.skipWaiting();
 });

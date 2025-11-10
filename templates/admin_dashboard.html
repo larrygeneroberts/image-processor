@@ -126,10 +126,11 @@
         <div class="info-card mb-4">
             <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data" class="d-flex align-items-center gap-3">
                 <label for="photoInput" class="form-label mb-0"><strong>Add Photos:</strong></label>
-                <input type="file" id="photoInput" name="photos" accept="image/*" multiple class="form-control" style="max-width: 300px;">
+                <input type="file" id="photoInput" name="photos" accept="image/*" multiple class="form-control" style="max-width: 300px;" data-max-files="{{ max_upload_files }}" data-max-bytes="{{ max_upload_bytes }}">
                 <button type="submit" class="btn btn-success">
                     <i class="fas fa-upload me-2"></i>Upload
                 </button>
+                <div class="form-text text-muted ms-2">Max/request: <strong>{{ max_upload_files }}</strong> files; payload: <strong>{{ (max_upload_bytes // (1024*1024)) }} MB</strong></div>
             </form>
         </div>
             <div class="row align-items-center">
@@ -315,6 +316,32 @@
         setInterval(() => {
             location.reload();
         }, 300000);
+
+        // Client-side enforcement of max upload file count (injected via template as max_upload_files)
+        (function(){
+            var input = document.getElementById('photoInput');
+            if (!input) return;
+            var maxFiles = parseInt(input.dataset.maxFiles || '{{ max_upload_files }}', 10) || 0;
+            var form = input.closest('form');
+            var submitBtn = form ? form.querySelector('button[type=submit]') : null;
+
+            var alertEl = document.createElement('div');
+            alertEl.className = 'alert alert-danger mt-2 d-none';
+            alertEl.id = 'fileCountAlert';
+            input.parentNode.insertBefore(alertEl, input.nextSibling);
+
+            input.addEventListener('change', function () {
+                var count = input.files ? input.files.length : 0;
+                if (maxFiles > 0 && count > maxFiles) {
+                    alertEl.textContent = 'You selected ' + count + ' files — the limit is ' + maxFiles + '. Please select fewer files.';
+                    alertEl.classList.remove('d-none');
+                    if (submitBtn) submitBtn.disabled = true;
+                } else {
+                    alertEl.classList.add('d-none');
+                    if (submitBtn) submitBtn.disabled = false;
+                }
+            });
+        })();
     </script>
 </body>
 </html>
