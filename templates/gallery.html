@@ -248,16 +248,58 @@
                 </p>
                 
                 <!-- Navigation -->
-                <div class="mt-3">
+                <div class="mt-3 d-flex justify-content-center align-items-center gap-2 flex-wrap">
                     <a href="/" class="btn btn-light me-2">
                         <i class="fas fa-home me-2"></i>Home
                     </a>
 
-                    </a>
+                    <!-- Slideshow selector: date pickers + button -->
+                    <div id="slideshowControls" class="d-inline-flex align-items-center gap-2">
+                        <input id="slideshow_start" type="date" class="form-control form-control-sm" style="width:160px;" aria-label="Slideshow start date"
+                            {% if selected_period %} value="{{ '%04d-%02d-01' % (selected_period.year, selected_period.month) }}" {% endif %}>
+                        <input id="slideshow_end" type="date" class="form-control form-control-sm" style="width:160px;" aria-label="Slideshow end date">
+                        <a id="slideshowBtn" href="{{ url_for('slideshow_page') }}" class="btn btn-light">
+                            <i class="fas fa-play me-2"></i>Slideshow
+                        </a>
+                    </div>
+
                     <a href="/admin" class="btn btn-outline-light">
                         <i class="fas fa-cogs me-2"></i>Admin
                     </a>
                 </div>
+                <script>
+                    (function(){
+                        const base = '{{ url_for("slideshow_page") }}';
+                        const startEl = document.getElementById('slideshow_start');
+                        const endEl = document.getElementById('slideshow_end');
+                        const btn = document.getElementById('slideshowBtn');
+
+                        // If a server-selected period exists, compute last day and prefill end date
+                        try {
+                            {% if selected_period %}
+                                const selYear = {{ selected_period.year }};
+                                const selMonth = {{ selected_period.month }}; // 1-12
+                                const lastDay = new Date(selYear, selMonth, 0).getDate();
+                                if (startEl && !startEl.value) startEl.value = `${selYear.toString().padStart(4,'0')}-${String(selMonth).padStart(2,'0')}-01`;
+                                if (endEl) endEl.value = `${selYear.toString().padStart(4,'0')}-${String(selMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+                            {% endif %}
+                        } catch (e) { console.warn('Init slideshow date failed', e); }
+
+                        function updateHref() {
+                            const params = new URLSearchParams();
+                            if (startEl && startEl.value) params.set('start', startEl.value);
+                            if (endEl && endEl.value) params.set('end', endEl.value);
+                            const href = params.toString() ? (base + '?' + params.toString()) : base;
+                            if (btn) btn.href = href;
+                        }
+
+                        if (startEl) startEl.addEventListener('change', updateHref);
+                        if (endEl) endEl.addEventListener('change', updateHref);
+
+                        // initialize href on load
+                        updateHref();
+                    })();
+                </script>
             </div>
             
             <!-- Statistics -->

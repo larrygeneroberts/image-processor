@@ -899,11 +899,42 @@ def admin_functions():
         logger.debug("admin db_info: %s", redacted)
     except Exception:
         logger.debug("admin db_info: (failed to redact)")
-    if db_config.get_database_type() == 'local':
+    db_type = db_config.get_database_type()
+    if db_type == 'local':
         db_path = db_info.get('config', {}).get('path')
         logger.debug("admin db_path: %s", db_path)
         if db_path and os.path.exists(db_path):
             db_size = os.path.getsize(db_path)
+    elif db_type == 'postgres':
+        # Try to query Postgres for the database size (pg_database_size)
+        try:
+            pg_dbname = db_info.get('config', {}).get('database')
+            if pg_dbname:
+                conn_db = None
+                try:
+                    conn_db = get_db_connection()
+                    if conn_db:
+                        cur = conn_db.cursor()
+                        # Use pg_database_size to get size in bytes
+                        cur.execute('SELECT pg_database_size(%s)', (pg_dbname,))
+                        row = cur.fetchone()
+                        if row:
+                            # row may be a tuple-like
+                            try:
+                                db_size = int(row[0])
+                            except Exception:
+                                pass
+                except Exception:
+                    logger.exception('Failed to query Postgres for database size')
+                finally:
+                    try:
+                        if conn_db:
+                            return_db_connection(conn_db)
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal: leave db_size as None
+            pass
     # Calculate storage size
     storage = get_storage()
     def get_dir_size(path):
@@ -1330,6 +1361,9 @@ def api_slideshow():
     limit = request.args.get('limit', default=100, type=int)
     order = request.args.get('order', default='desc')
     date_rate = request.args.get('date_rate', default='none')
+    # Optional date range filters (ISO date strings e.g. 2023-11-01)
+    start_param = request.args.get('start')
+    end_param = request.args.get('end')
 
     photos_out = []
     conn = None
@@ -1343,17 +1377,38 @@ def api_slideshow():
         if db_cfg.get_database_type() == 'postgres':
             cur = conn.cursor()
             # Effective date: COALESCE(photo_taken_date, upload_timestamp)
+            # Build optional WHERE clause for start/end filters
+            where_frag = ''
+            where_params = []
+            try:
+                if start_param:
+                    # start_param is expected as YYYY-MM-DD or full ISO; let Postgres parse
+                    where_frag += ("COALESCE(photo_taken_date, upload_timestamp) >= %s")
+                    where_params.append(start_param)
+                if end_param:
+                    if where_frag:
+                        where_frag += ' AND '
+                    # To include the full end day when user passed a date, allow <= end + 23:59:59 when just a date string
+                    where_frag += ("COALESCE(photo_taken_date, upload_timestamp) <= %s")
+                    # If user provided only a date (YYYY-MM-DD) Postgres will accept the date string
+                    where_params.append(end_param)
+            except Exception:
+                where_frag = ''
+                where_params = []
+
             if date_rate in ('daily', 'monthly', 'yearly'):
                 trunc = 'day' if date_rate == 'daily' else ('month' if date_rate == 'monthly' else 'year')
+                inner_where = ('WHERE ' + where_frag) if where_frag else ''
                 q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) AS eff_date "
-                     f"FROM (SELECT DISTINCT ON (date_trunc('{trunc}', COALESCE(photo_taken_date, upload_timestamp))) id, original_filename, photo_taken_date, upload_timestamp FROM photos "
+                     f"FROM (SELECT DISTINCT ON (date_trunc('{trunc}', COALESCE(photo_taken_date, upload_timestamp))) id, original_filename, photo_taken_date, upload_timestamp FROM photos {inner_where} "
                      f"ORDER BY date_trunc('{trunc}', COALESCE(photo_taken_date, upload_timestamp)) DESC, COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC) t "
                      f"ORDER BY eff_date { 'ASC' if order == 'asc' else 'DESC' } LIMIT %s")
-                cur.execute(q, (limit,))
+                cur.execute(q, tuple(where_params + [limit]))
             else:
+                where_clause = ('WHERE ' + where_frag) if where_frag else ''
                 q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) AS eff_date "
-                     f"FROM photos ORDER BY eff_date { 'ASC' if order == 'asc' else 'DESC' } LIMIT %s")
-                cur.execute(q, (limit,))
+                     f"FROM photos {where_clause} ORDER BY eff_date { 'ASC' if order == 'asc' else 'DESC' } LIMIT %s")
+                cur.execute(q, tuple(where_params + [limit]))
             rows = cur.fetchall()
             for r in rows:
                 pid = r[0]
@@ -1372,17 +1427,35 @@ def api_slideshow():
                 })
         else:
             cur = conn.cursor()
+            # SQLite branch: build optional where clause similarly
+            where_frag = ''
+            where_params = []
+            try:
+                if start_param:
+                    where_frag += "COALESCE(photo_taken_date, upload_timestamp) >= ?"
+                    where_params.append(start_param)
+                if end_param:
+                    if where_frag:
+                        where_frag += ' AND '
+                    where_frag += "COALESCE(photo_taken_date, upload_timestamp) <= ?"
+                    where_params.append(end_param)
+            except Exception:
+                where_frag = ''
+                where_params = []
+
             if date_rate in ('daily', 'monthly', 'yearly'):
                 # SQLite: use strftime to bucket
                 fmt = '%Y-%m-%d' if date_rate == 'daily' else ('%Y-%m' if date_rate == 'monthly' else '%Y')
+                where_clause = ('WHERE ' + where_frag) if where_frag else ''
                 q = ("SELECT id, original_filename, MAX(COALESCE(photo_taken_date, upload_timestamp)) as eff_date "
-                     f"FROM photos GROUP BY strftime('{fmt}', COALESCE(photo_taken_date, upload_timestamp)) "
+                     f"FROM photos {where_clause} GROUP BY strftime('{fmt}', COALESCE(photo_taken_date, upload_timestamp)) "
                      f"ORDER BY eff_date {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
-                cur.execute(q, (limit,))
+                cur.execute(q, tuple(where_params + [limit]))
             else:
+                where_clause = ('WHERE ' + where_frag) if where_frag else ''
                 q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) as eff_date "
-                     f"FROM photos ORDER BY eff_date {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
-                cur.execute(q, (limit,))
+                     f"FROM photos {where_clause} ORDER BY eff_date {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
+                cur.execute(q, tuple(where_params + [limit]))
             rows = cur.fetchall()
             for r in rows:
                 pid = r[0]

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slideshow</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .slideshow-container { max-width: 900px; margin: 2rem auto; text-align:center }
+    .slideshow-image { width:100%; max-height: 70vh; object-fit: contain; background: #000; }
+    .controls { margin-top: 1rem; }
+    /* When in fullscreen we want a minimal view: hide controls and metadata */
+    .slideshow-container.hide-controls-fullscreen .controls,
+    .slideshow-container.hide-controls-fullscreen h3,
+    .slideshow-container.hide-controls-fullscreen #meta {
+      display: none !important;
+    }
+
+    /* Center the image and let it fill the viewport in fullscreen */
+    .slideshow-container:fullscreen,
+    .slideshow-container:-webkit-full-screen,
+    .slideshow-container:-ms-fullscreen {
+      width: 100vw !important;
+      height: 100vh !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #000;
+    }
+
+    .slideshow-container:fullscreen .slideshow-image,
+    .slideshow-container:-webkit-full-screen .slideshow-image,
+    .slideshow-container:-ms-fullscreen .slideshow-image {
+      max-height: 100vh;
+      max-width: 100vw;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+    }
+  </style>
+</head>
+<body>
+  <div class="container slideshow-container">
+    <h3 class="mb-3">Slideshow</h3>
+    <div id="meta" class="mb-2 text-muted"></div>
+    <div>
+      <img id="slideImg" class="slideshow-image" src="" alt="slideshow image"/>
+    </div>
+    <div class="controls">
+      <div class="d-flex justify-content-center gap-2">
+        <button id="backBtn" class="btn btn-outline-secondary">Back</button>
+        <button id="prevBtn" class="btn btn-outline-secondary">Prev</button>
+        <button id="playBtn" class="btn btn-primary">Play</button>
+        <button id="nextBtn" class="btn btn-outline-secondary">Next</button>
+        <button id="fullscreenBtn" class="btn btn-outline-secondary">Fullscreen</button>
+      </div>
+      <div class="mt-2 d-flex justify-content-center align-items-center gap-3">
+        <div>
+          <label for="speedRange" class="form-label mb-0">Speed</label>
+          <input id="speedRange" type="range" min="1" max="10" value="3" />
+        </div>
+        <div>
+          <small id="speedLabel">3s</small>
+        </div>
+        <div>
+          <small id="counter"></small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Read query params and pass them to /api/slideshow
+    function paramsToQuery() {
+      const params = new URLSearchParams(window.location.search);
+      // preserve limit/order/date_rate if provided; otherwise default handled by API
+      return params.toString();
+    }
+
+    async function loadPhotos() {
+      try {
+        const qs = paramsToQuery();
+        const url = '/api/slideshow' + (qs ? ('?' + qs) : '');
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        const data = await res.json();
+        return data.photos || [];
+      } catch (e) {
+        console.error('Failed to load slideshow photos', e);
+        return [];
+      }
+    }
+
+    (async function() {
+      const photos = await loadPhotos();
+      const imgEl = document.getElementById('slideImg');
+      const counter = document.getElementById('counter');
+      const meta = document.getElementById('meta');
+      let idx = 0;
+      let playing = false;
+      let timer = null;
+      // playback speed, seconds per slide (default 3)
+      let speedSec = 3;
+
+      // Elements
+      const speedRange = document.getElementById('speedRange');
+      const speedLabel = document.getElementById('speedLabel');
+      const fullscreenBtn = document.getElementById('fullscreenBtn');
+
+      // Update speed UI and restart timer if playing
+      function setSpeed(sec) {
+        speedSec = Math.max(1, Math.min(60, Number(sec) || 3));
+        if (speedLabel) speedLabel.textContent = `${speedSec}s`;
+        if (playing) {
+          if (timer) clearInterval(timer);
+          timer = setInterval(() => { show(idx+1); }, speedSec * 1000);
+        }
+      }
+
+      if (speedRange) {
+        // sync initial label
+        speedLabel.textContent = `${speedRange.value}s`;
+        speedRange.addEventListener('input', (e) => {
+          setSpeed(e.target.value);
+        });
+      }
+
+      // Fullscreen handling
+      async function enterFullscreen() {
+        const el = document.querySelector('.slideshow-container') || document.documentElement;
+        try {
+          if (el.requestFullscreen) await el.requestFullscreen();
+          else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+          else if (el.msRequestFullscreen) el.msRequestFullscreen();
+          fullscreenBtn.textContent = 'Exit Fullscreen';
+        } catch (e) {
+          console.warn('Fullscreen request failed', e);
+        }
+      }
+
+      async function exitFullscreen() {
+        try {
+          if (document.exitFullscreen) await document.exitFullscreen();
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+          else if (document.msExitFullscreen) document.msExitFullscreen();
+          fullscreenBtn.textContent = 'Fullscreen';
+        } catch (e) {
+          console.warn('Exit fullscreen failed', e);
+        }
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement && !document.msFullscreenElement) {
+          enterFullscreen();
+        } else {
+          exitFullscreen();
+        }
+      }
+
+      if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', toggleFullscreen);
+      }
+
+      // Back button (visible in non-fullscreen mode) — navigate to main page
+      const backBtn = document.getElementById('backBtn');
+      if (backBtn) {
+        backBtn.addEventListener('click', () => { window.location.href = '/'; });
+      }
+
+      // Handle fullscreenchange to hide/show controls automatically
+      function onFullscreenChange() {
+        const container = document.querySelector('.slideshow-container');
+        const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+        try {
+          if (container) {
+            if (isFs) container.classList.add('hide-controls-fullscreen');
+            else container.classList.remove('hide-controls-fullscreen');
+          }
+        } catch (e) {
+          console.warn('fullscreen change handling failed', e);
+        }
+      }
+      document.addEventListener('fullscreenchange', onFullscreenChange);
+      document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+      document.addEventListener('msfullscreenchange', onFullscreenChange);
+
+      // Keyboard shortcuts: space = play/pause, f = fullscreen, left/right = nav
+      window.addEventListener('keydown', (ev) => {
+        const activeTag = (document.activeElement && document.activeElement.tagName) || '';
+        // ignore when typing in inputs
+        if (['INPUT', 'TEXTAREA'].includes(activeTag)) return;
+        if (ev.code === 'Space') {
+          ev.preventDefault();
+          document.getElementById('playBtn').click();
+        } else if (ev.key === 'f' || ev.key === 'F') {
+          toggleFullscreen();
+        } else if (ev.key === 'ArrowRight') {
+          document.getElementById('nextBtn').click();
+        } else if (ev.key === 'ArrowLeft') {
+          document.getElementById('prevBtn').click();
+        }
+      });
+
+      function show(i) {
+        if (!photos || photos.length === 0) {
+          imgEl.src = '';
+          imgEl.alt = 'No photos';
+          counter.textContent = 'No photos';
+          meta.textContent = '';
+          return;
+        }
+        idx = (i + photos.length) % photos.length;
+        const p = photos[idx];
+        imgEl.src = p.photo_url;
+        imgEl.alt = p.title || '';
+        counter.textContent = `${idx+1} / ${photos.length}`;
+        meta.textContent = p.date ? `Date: ${p.date}` : '';
+      }
+
+      document.getElementById('prevBtn').addEventListener('click', () => { show(idx-1); });
+      document.getElementById('nextBtn').addEventListener('click', () => { show(idx+1); });
+      document.getElementById('playBtn').addEventListener('click', () => {
+        playing = !playing;
+        const btn = document.getElementById('playBtn');
+        if (playing) {
+          btn.textContent = 'Pause';
+          timer = setInterval(() => { show(idx+1); }, speedSec * 1000);
+        } else {
+          btn.textContent = 'Play';
+          if (timer) clearInterval(timer);
+          timer = null;
+        }
+      });
+
+      // show first
+      show(0);
+    })();
+  </script>
+</body>
+</html>
