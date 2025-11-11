@@ -927,7 +927,6 @@ def main_dashboard():
     return render_template('index.html', stats=stats, storage_paths=storage_paths)
 
 @app.route('/admin')
-@require_admin_token
 def admin_functions():
     """Separate admin page for admin functions"""
     
