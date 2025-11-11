@@ -34,6 +34,7 @@ import io
 import hashlib
 import time
 from datetime import datetime, timezone
+import shutil
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -48,58 +49,11 @@ from typing import Optional, Tuple
 # form/json field `admin_token`. In development (FLASK_DEBUG=1) this check
 # is relaxed to avoid blocking local testing when a token isn't configured.
 def require_admin_token(fn):
+    # Admin protection disabled by user request. This decorator is a no-op
+    # so admin and quarantine pages are accessible without an admin token.
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        admin_token = os.environ.get('ADMIN_TOKEN')
-        debug = os.environ.get('FLASK_DEBUG', '0') == '1'
-        # If user has a valid session flag, allow access
-        if session.get('is_admin'):
-            return fn(*args, **kwargs)
-
-        if not admin_token:
-            if debug:
-                # Allow admin access in debug mode when no token is set
-                return fn(*args, **kwargs)
-            # If the client expects JSON (XHR/API) return JSON error; otherwise
-            # redirect browser users to the admin login prompt so they can enter
-            # a simple password to get a session cookie.
-            accept = request.headers.get('Accept', '')
-            is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-            wants_json = 'application/json' in accept or is_xhr or request.is_json
-            if wants_json:
-                return jsonify({'error': 'admin token not configured'}), 403
-            else:
-                return redirect(url_for('admin_login', next=request.path))
-
-        # Look for token in header, JSON body, or form field
-        header = request.headers.get('X-Admin-Token')
-        candidate = None
-        if header:
-            candidate = header
-        else:
-            try:
-                if request.is_json:
-                    candidate = request.json.get('admin_token')
-            except Exception:
-                candidate = None
-            if not candidate:
-                candidate = request.form.get('admin_token')
-
-        if candidate and candidate == admin_token:
-            # set session so browser users don't need to send header on every request
-            try:
-                session['is_admin'] = True
-            except Exception:
-                pass
-            return fn(*args, **kwargs)
-        # If request expects JSON return JSON error, otherwise redirect to login
-        accept = request.headers.get('Accept', '')
-        is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-        wants_json = 'application/json' in accept or is_xhr or request.is_json
-        if wants_json:
-            return jsonify({'error': 'unauthorized'}), 401
-        else:
-            return redirect(url_for('admin_login', next=request.path))
+        return fn(*args, **kwargs)
     return wrapper
 
 
@@ -1356,6 +1310,106 @@ def gallery():
     return render_template('gallery.html', stats=stats, available_periods=available_periods,
                            photos=photos, selected_period=selected_period, pagination=pagination)
 
+
+# Slideshow routes (MVP)
+@app.route('/slideshow')
+def slideshow_page():
+    """Render the slideshow page which mounts the JS UI."""
+    return render_template('slideshow.html')
+
+
+@app.route('/api/slideshow')
+def api_slideshow():
+    """Return a JSON list of photos for the slideshow.
+
+    Query params:
+      - limit: int (max number of photos, default 100)
+      - order: asc|desc (by effective date)
+      - date_rate: one of daily|monthly|yearly|none (sampling/grouping rate)
+    """
+    limit = request.args.get('limit', default=100, type=int)
+    order = request.args.get('order', default='desc')
+    date_rate = request.args.get('date_rate', default='none')
+
+    photos_out = []
+    conn = None
+    try:
+        db_cfg = get_db_config()
+        conn = get_db_connection()
+        if conn is None:
+            return jsonify({'photos': []})
+
+        # Build query depending on database type and requested sampling
+        if db_cfg.get_database_type() == 'postgres':
+            cur = conn.cursor()
+            # Effective date: COALESCE(photo_taken_date, upload_timestamp)
+            if date_rate in ('daily', 'monthly', 'yearly'):
+                trunc = 'day' if date_rate == 'daily' else ('month' if date_rate == 'monthly' else 'year')
+                q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) AS eff_date "
+                     f"FROM (SELECT DISTINCT ON (date_trunc('{trunc}', COALESCE(photo_taken_date, upload_timestamp))) id, original_filename, photo_taken_date, upload_timestamp FROM photos "
+                     f"ORDER BY date_trunc('{trunc}', COALESCE(photo_taken_date, upload_timestamp)) DESC, COALESCE(photo_taken_date, upload_timestamp) DESC, id DESC) t "
+                     f"ORDER BY eff_date { 'ASC' if order == 'asc' else 'DESC' } LIMIT %s")
+                cur.execute(q, (limit,))
+            else:
+                q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) AS eff_date "
+                     f"FROM photos ORDER BY eff_date { 'ASC' if order == 'asc' else 'DESC' } LIMIT %s")
+                cur.execute(q, (limit,))
+            rows = cur.fetchall()
+            for r in rows:
+                pid = r[0]
+                name = r[1]
+                eff = r[2]
+                try:
+                    eff_iso = eff.isoformat() if hasattr(eff, 'isoformat') else (str(eff) if eff else None)
+                except Exception:
+                    eff_iso = None
+                photos_out.append({
+                    'id': pid,
+                    'title': name,
+                    'thumbnail_url': url_for('serve_thumbnail', photo_id=pid),
+                    'photo_url': url_for('serve_full_photo', photo_id=pid),
+                    'date': eff_iso
+                })
+        else:
+            cur = conn.cursor()
+            if date_rate in ('daily', 'monthly', 'yearly'):
+                # SQLite: use strftime to bucket
+                fmt = '%Y-%m-%d' if date_rate == 'daily' else ('%Y-%m' if date_rate == 'monthly' else '%Y')
+                q = ("SELECT id, original_filename, MAX(COALESCE(photo_taken_date, upload_timestamp)) as eff_date "
+                     f"FROM photos GROUP BY strftime('{fmt}', COALESCE(photo_taken_date, upload_timestamp)) "
+                     f"ORDER BY eff_date {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
+                cur.execute(q, (limit,))
+            else:
+                q = ("SELECT id, original_filename, COALESCE(photo_taken_date, upload_timestamp) as eff_date "
+                     f"FROM photos ORDER BY eff_date {'ASC' if order == 'asc' else 'DESC'} LIMIT ?")
+                cur.execute(q, (limit,))
+            rows = cur.fetchall()
+            for r in rows:
+                pid = r[0]
+                name = r[1]
+                eff = r[2] if len(r) > 2 else None
+                try:
+                    eff_iso = eff.isoformat() if hasattr(eff, 'isoformat') else (str(eff) if eff else None)
+                except Exception:
+                    eff_iso = None
+                photos_out.append({
+                    'id': pid,
+                    'title': name,
+                    'thumbnail_url': url_for('serve_thumbnail', photo_id=pid),
+                    'photo_url': url_for('serve_full_photo', photo_id=pid),
+                    'date': eff_iso
+                })
+    except Exception as e:
+        logger.exception('Error building slideshow list: %s', e)
+    finally:
+        try:
+            if conn:
+                return_db_connection(conn)
+        except Exception:
+            pass
+
+    return jsonify({'photos': photos_out})
+
 @app.route('/api/stats')
 def api_stats():
     """API endpoint for statistics"""
@@ -1838,6 +1892,398 @@ def admin_storage_usage():
         return jsonify({'total_bytes': total_bytes, 'file_count': file_count})
     except Exception as e:
         logger.exception('Error computing storage usage: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/quarantine')
+@require_admin_token
+def admin_quarantine_page():
+    """Render admin quarantine review page for thumbnails moved to quarantine."""
+    return render_template('quarantine_review.html')
+
+
+@app.route('/admin/duplicates')
+@require_admin_token
+def admin_duplicates_page():
+    """Render admin page to review duplicate thumbnail candidates."""
+    return render_template('duplicates_review.html')
+
+
+@app.route('/api/quarantine/list')
+@require_admin_token
+def api_quarantine_list():
+    """Return JSON list of quarantined items from the manifest."""
+    storage = get_storage()
+    manifest_dir = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+    manifest_path = os.path.join(manifest_dir, 'manifest.json')
+    items = []
+    try:
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as fh:
+                raw_items = json.load(fh)
+                items = []
+                # Normalize paths for frontend usage: produce
+                # - 'quarantine_rel' as path relative to the quarantine folder
+                # - 'original_rel' as path relative to storage.base_path
+                base_quarantine = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+                for it in raw_items:
+                    new_it = dict(it)
+                    # normalize original_rel
+                    orig = it.get('original_rel')
+                    if orig:
+                        try:
+                            if os.path.isabs(orig) and orig.startswith(os.path.abspath(storage.base_path)):
+                                new_it['original_rel'] = os.path.relpath(orig, storage.base_path)
+                            elif os.path.exists(os.path.join(storage.base_path, orig)):
+                                new_it['original_rel'] = os.path.relpath(os.path.join(storage.base_path, orig), storage.base_path)
+                            else:
+                                # leave as-is (fallback)
+                                new_it['original_rel'] = orig
+                        except Exception:
+                            new_it['original_rel'] = orig
+                    # normalize quarantine_rel
+                    q = it.get('quarantine_rel')
+                    if q:
+                        try:
+                            # Compute absolute candidate paths. Prefer paths under the
+                            # quarantine directory (base_quarantine). Some manifests have
+                            # values like "Users/.." which are stored under
+                            # processed/quarantine_thumbnail_removal/Users/..; try that
+                            # first to avoid producing "../Users/..." relpaths.
+                            if os.path.isabs(q):
+                                abs_q = q
+                            else:
+                                # try base_quarantine first
+                                abs_q = os.path.join(base_quarantine, q)
+                                if not os.path.exists(abs_q):
+                                    # fallback to processed_path (legacy cases)
+                                    abs_q = os.path.join(storage.processed_path, q)
+
+                            abs_q = os.path.abspath(abs_q)
+                            base_q_abs = os.path.abspath(base_quarantine)
+                            if abs_q.startswith(base_q_abs):
+                                # produce a path relative to the quarantine folder
+                                new_it['quarantine_rel'] = os.path.relpath(abs_q, base_quarantine)
+                            else:
+                                # If we can't resolve into the quarantine tree, use
+                                # the basename as a safe, non-escaping fallback.
+                                new_it['quarantine_rel'] = os.path.basename(q)
+                        except Exception:
+                            new_it['quarantine_rel'] = q
+                    items.append(new_it)
+        else:
+            items = []
+    except Exception:
+        logger.exception('Failed to load quarantine manifest %s', manifest_path)
+        items = []
+    return jsonify({'items': items})
+
+
+@app.route('/api/duplicates/list')
+@require_admin_token
+def api_duplicates_list():
+    """Return JSON list of duplicate thumbnail candidates generated by the
+    phash finder script.
+    """
+    storage = get_storage()
+    manifest_dir = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+    dup_path = os.path.join(manifest_dir, 'duplicate_thumbnail_candidates.json')
+    items = []
+    try:
+        if os.path.exists(dup_path):
+            with open(dup_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+                items = data.get('candidates', [])
+        else:
+            items = []
+    except Exception:
+        logger.exception('Failed to load duplicate candidates %s', dup_path)
+        items = []
+    # normalize thumb_rel/original_rel for frontend (they are already storage-relative)
+    return jsonify({'items': items})
+
+
+@app.route('/admin/duplicates/file')
+@require_admin_token
+def admin_duplicates_file():
+    """Serve a thumbnail file by its storage-relative path (e.g. thumbnails/2016-07/abc.jpg).
+
+    Query param: path
+    """
+    rel = request.args.get('path')
+    if not rel:
+        return '', 400
+    storage = get_storage()
+    # Only allow paths that start with the thumbnails directory
+    safe_rel = os.path.normpath(rel).lstrip(os.sep)
+    # Construct absolute path under storage.thumbnails_path
+    full = os.path.join(storage.thumbnails_path, os.path.relpath(safe_rel, 'thumbnails'))
+    full = os.path.abspath(full)
+    thumbs_base = os.path.abspath(storage.thumbnails_path)
+    if not full.startswith(thumbs_base):
+        return '', 403
+    if not os.path.exists(full):
+        return '', 404
+    try:
+        with open(full, 'rb') as fh:
+            data = fh.read()
+        import mimetypes
+        mime, _ = mimetypes.guess_type(full)
+        if not mime:
+            mime = 'application/octet-stream'
+        from flask import Response
+        resp = Response(data, mimetype=mime)
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+    except Exception:
+        logger.exception('Failed to serve thumbnail file %s', full)
+        return '', 500
+
+
+@app.route('/api/duplicates/quarantine', methods=['POST'])
+@require_admin_token
+def api_duplicates_quarantine():
+    """Move a thumbnail candidate into processed/thumbnail_deletions for review.
+
+    Expects JSON: {"thumb_rel": "thumbnails/....jpg", "original_rel": "originals/..."}
+    """
+    try:
+        data = request.get_json() or {}
+    except Exception:
+        data = request.form or {}
+    thumb_rel = data.get('thumb_rel')
+    orig_rel = data.get('original_rel')
+    if not thumb_rel:
+        return jsonify({'error': 'thumb_rel required'}), 400
+    storage = get_storage()
+    thumb_safe = os.path.normpath(thumb_rel).lstrip(os.sep)
+    thumb_full = os.path.abspath(os.path.join(storage.base_path, thumb_safe))
+    thumbs_base = os.path.abspath(storage.thumbnails_path)
+    if not thumb_full.startswith(thumbs_base):
+        return jsonify({'error': 'invalid thumbnail path'}), 403
+    if not os.path.exists(thumb_full):
+        return jsonify({'error': 'thumbnail not found'}), 404
+
+    # destination folder for safe review
+    dest_dir = os.path.join(storage.processed_path, 'thumbnail_deletions')
+    os.makedirs(dest_dir, exist_ok=True)
+    base_name = os.path.basename(thumb_full)
+    dest_full = os.path.join(dest_dir, base_name)
+    # ensure unique name
+    i = 1
+    while os.path.exists(dest_full):
+        name, ext = os.path.splitext(base_name)
+        dest_full = os.path.join(dest_dir, f"{name}_dup{i}{ext}")
+        i += 1
+    try:
+        shutil.move(thumb_full, dest_full)
+        # record in a small manifest
+        manifest_file = os.path.join(dest_dir, 'manifest.json')
+        entry = {
+            'thumb_rel': thumb_rel,
+            'original_rel': orig_rel,
+            'moved_to': os.path.relpath(dest_full, storage.base_path),
+            'moved_at': datetime.utcnow().isoformat() + 'Z',
+            'size': os.path.getsize(dest_full)
+        }
+        try:
+            if os.path.exists(manifest_file):
+                with open(manifest_file, 'r', encoding='utf-8') as fh:
+                    l = json.load(fh)
+            else:
+                l = []
+        except Exception:
+            l = []
+        l.append(entry)
+        with open(manifest_file, 'w', encoding='utf-8') as fh:
+            json.dump(l, fh, indent=2)
+
+        # Optionally update the duplicate candidates file to mark quarantined
+        dup_file = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal', 'duplicate_thumbnail_candidates.json')
+        try:
+            if os.path.exists(dup_file):
+                with open(dup_file, 'r', encoding='utf-8') as fh:
+                    dup = json.load(fh)
+                changed = False
+                for c in dup.get('candidates', []):
+                    if c.get('thumb_rel') == thumb_rel and c.get('original_rel') == orig_rel:
+                        c['status'] = 'quarantined'
+                        c['quarantined_to'] = os.path.relpath(dest_full, storage.base_path)
+                        c['quarantined_at'] = datetime.utcnow().isoformat() + 'Z'
+                        changed = True
+                if changed:
+                    with open(dup_file, 'w', encoding='utf-8') as fh:
+                        json.dump(dup, fh, indent=2)
+        except Exception:
+            logger.exception('Failed to mark duplicate candidate quarantined in %s', dup_file)
+
+        return jsonify({'status': 'moved', 'moved_to': os.path.relpath(dest_full, storage.base_path)}), 200
+    except Exception as e:
+        logger.exception('Failed to move thumbnail %s to %s: %s', thumb_full, dest_full, e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/quarantine/file')
+@require_admin_token
+def admin_quarantine_file():
+    """Serve a quarantined file by its relative path under the quarantine folder.
+
+    Query param: path (relative path inside processed/quarantine_thumbnail_removal).
+    """
+    rel = request.args.get('path')
+    if not rel:
+        return '', 400
+    storage = get_storage()
+    base = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+    # Prevent directory traversal
+    safe_rel = os.path.normpath(rel).lstrip(os.sep)
+    full = os.path.join(base, safe_rel)
+    if not full.startswith(os.path.abspath(base)):
+        return '', 403
+    if not os.path.exists(full):
+        return '', 404
+    try:
+        with open(full, 'rb') as fh:
+            data = fh.read()
+        import mimetypes
+        mime, _ = mimetypes.guess_type(full)
+        if not mime:
+            mime = 'application/octet-stream'
+        from flask import Response
+        resp = Response(data, mimetype=mime)
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+    except Exception:
+        logger.exception('Failed to serve quarantined file %s', full)
+        return '', 500
+
+
+@app.route('/admin/quarantine/original')
+@require_admin_token
+def admin_quarantine_original():
+    """Serve an original file referenced in the manifest by its storage relative path.
+
+    Query param: path (relative path inside storage.base_path originals).
+    """
+    rel = request.args.get('path')
+    if not rel:
+        return '', 400
+    storage = get_storage()
+    try:
+        data = storage.read_photo(rel)
+    except FileNotFoundError:
+        # The original may have been moved to quarantine. Attempt to locate
+        # a quarantined copy by inspecting the manifest and serving that
+        # file instead (best-effort fallback for review UI).
+        try:
+            manifest_dir = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+            manifest_path = os.path.join(manifest_dir, 'manifest.json')
+            if os.path.exists(manifest_path):
+                with open(manifest_path, 'r', encoding='utf-8') as fh:
+                    items = json.load(fh)
+                # Find the first manifest entry that references this original_rel
+                match = None
+                for it in items:
+                    if it.get('original_rel') == rel:
+                        match = it
+                        break
+                if match:
+                    qrel = match.get('quarantine_rel')
+                    if qrel:
+                        # Resolve quarantine_rel relative to the quarantine dir
+                        # Some entries may already be stored with a subpath like
+                        # "Users/.." under the quarantine folder — construct the
+                        # absolute path safely.
+                        q_safe = os.path.normpath(qrel).lstrip(os.sep)
+                        q_full = os.path.join(manifest_dir, q_safe)
+                        q_full = os.path.abspath(q_full)
+                        base_q = os.path.abspath(manifest_dir)
+                        if q_full.startswith(base_q) and os.path.exists(q_full):
+                            try:
+                                with open(q_full, 'rb') as fh:
+                                    data = fh.read()
+                            except Exception:
+                                logger.exception('Failed to read quarantined original %s', q_full)
+                                return '', 500
+                        else:
+                            return '', 404
+                    else:
+                        return '', 404
+                else:
+                    return '', 404
+            else:
+                return '', 404
+        except Exception:
+            logger.exception('Failed to locate original in manifest for %s', rel)
+            return '', 500
+    except Exception:
+        logger.exception('Failed to read original %s', rel)
+        return '', 500
+    try:
+        import imghdr, mimetypes
+        img_type = imghdr.what(None, data)
+        mime = 'image/jpeg'
+        if img_type:
+            mime = f'image/{img_type}'
+        else:
+            mt, _ = mimetypes.guess_type(rel)
+            if mt:
+                mime = mt
+        from flask import Response
+        resp = Response(data, mimetype=mime)
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+    except Exception:
+        logger.exception('Failed to serve original bytes for %s', rel)
+        return '', 500
+
+
+@app.route('/api/quarantine/delete', methods=['POST'])
+@require_admin_token
+def api_quarantine_delete():
+    """Permanently delete a quarantined file. Expects JSON {"quarantine_rel": "..."}.
+
+    This updates the manifest (marks status deleted and records deleted_at).
+    """
+    try:
+        data = request.get_json() or {}
+    except Exception:
+        data = request.form or {}
+    qrel = data.get('quarantine_rel')
+    if not qrel:
+        return jsonify({'error': 'quarantine_rel required'}), 400
+    storage = get_storage()
+    base = os.path.join(storage.processed_path, 'quarantine_thumbnail_removal')
+    safe_rel = os.path.normpath(qrel).lstrip(os.sep)
+    full = os.path.join(base, safe_rel)
+    if not full.startswith(os.path.abspath(base)):
+        return jsonify({'error': 'invalid path'}), 403
+    if not os.path.exists(full):
+        return jsonify({'error': 'file not found'}), 404
+    manifest_path = os.path.join(base, 'manifest.json')
+    try:
+        # Remove the file
+        sz = os.path.getsize(full)
+        os.remove(full)
+        # Update manifest
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as fh:
+                items = json.load(fh)
+        else:
+            items = []
+        changed = False
+        for it in items:
+            if it.get('quarantine_rel') == qrel:
+                it['status'] = 'deleted'
+                it['deleted_at'] = datetime.now(timezone.utc).isoformat()
+                it['deleted_size'] = sz
+                changed = True
+        if changed:
+            with open(manifest_path, 'w', encoding='utf-8') as fh:
+                json.dump(items, fh, indent=2)
+        return jsonify({'status': 'deleted', 'quarantine_rel': qrel}), 200
+    except Exception as e:
+        logger.exception('Failed to delete quarantined file %s: %s', full, e)
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
