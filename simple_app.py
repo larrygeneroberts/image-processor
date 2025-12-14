@@ -1021,6 +1021,12 @@ def gallery():
     total = 0
 
     try:
+        # Ensure soft-delete columns exist before running queries that reference them.
+        try:
+            _ensure_delete_columns(conn, db_config)
+        except Exception:
+            # Non-fatal: if schema alter fails, proceed and let DB errors be handled below
+            logger.debug('Could not ensure delete columns before gallery query')
         if db_config.get_database_type() == 'postgres':
             from psycopg2.extras import RealDictCursor
             cursor = conn.cursor(cursor_factory=RealDictCursor)
