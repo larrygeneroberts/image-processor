@@ -50,6 +50,11 @@ from typing import Optional, Tuple
 def require_admin_token(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        # Allow an override to disable admin auth for the admin pages/actions.
+        # Set ADMIN_OPEN=1 in the environment to allow access without a password.
+        if os.environ.get('ADMIN_OPEN', '').lower() in ('1', 'true', 'yes'):
+            return fn(*args, **kwargs)
+
         admin_token = os.environ.get('ADMIN_TOKEN')
         debug = os.environ.get('FLASK_DEBUG', '0') == '1'
         # If user has a valid session flag, allow access
@@ -161,6 +166,26 @@ def inject_upload_limits():
         return {'max_upload_files': DEFAULT_MAX_UPLOAD_FILES, 'max_upload_bytes': max_bytes}
     except Exception:
         return {'max_upload_files': 50, 'max_upload_bytes': 50 * 1024 * 1024}
+
+
+@app.context_processor
+def inject_admin_flags():
+    """Expose admin-related flags to templates.
+
+    - admin_open: whether ADMIN_OPEN env var allows passwordless admin
+    - is_admin_session: whether the current session has been marked admin
+    - admin_available: True if admin UI should be shown (open or session or debug)
+    """
+    try:
+        admin_open = os.environ.get('ADMIN_OPEN', '').lower() in ('1', 'true', 'yes')
+    except Exception:
+        admin_open = False
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    try:
+        is_admin_session = bool(session.get('is_admin'))
+    except Exception:
+        is_admin_session = False
+    return {'admin_open': admin_open, 'is_admin_session': is_admin_session, 'admin_available': admin_open or is_admin_session or debug}
 
 # Initialize CSRF protection if available. This is optional: if the
 # environment doesn't have Flask-WTF installed, we warn and continue.
@@ -999,13 +1024,13 @@ def gallery():
         if db_config.get_database_type() == 'postgres':
             from psycopg2.extras import RealDictCursor
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            # available periods
+            # available periods (exclude soft-deleted photos)
             cursor.execute("""
                 SELECT EXTRACT(YEAR FROM photo_taken_date) AS year,
                        EXTRACT(MONTH FROM photo_taken_date) AS month,
                        COUNT(*) AS photo_count
                 FROM photos
-                WHERE photo_taken_date IS NOT NULL
+                WHERE photo_taken_date IS NOT NULL AND COALESCE(is_deleted, FALSE) = FALSE
                 GROUP BY year, month
                 ORDER BY year DESC, month DESC
             """)
@@ -1022,6 +1047,8 @@ def gallery():
             # build photos query
             where = []
             params = []
+            # always exclude soft-deleted rows from gallery results
+            where.append("COALESCE(is_deleted, FALSE) = FALSE")
             if year and month:
                 # Filter by the effective date (taken date, or upload timestamp)
                 where.append("EXTRACT(YEAR FROM COALESCE(photo_taken_date, upload_timestamp)) = %s AND EXTRACT(MONTH FROM COALESCE(photo_taken_date, upload_timestamp)) = %s")
@@ -1129,7 +1156,7 @@ def gallery():
                        strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) AS month,
                        COUNT(*) AS photo_count
                 FROM photos
-                WHERE COALESCE(photo_taken_date, upload_timestamp) IS NOT NULL
+                WHERE COALESCE(photo_taken_date, upload_timestamp) IS NOT NULL AND COALESCE(is_deleted, 0) = 0
                 GROUP BY year, month
                 ORDER BY year DESC, month DESC
             """)
@@ -1146,6 +1173,8 @@ def gallery():
 
             where = []
             params = []
+            # always exclude soft-deleted rows from gallery results (sqlite uses 0/1)
+            where.append("COALESCE(is_deleted, 0) = 0")
             if year and month:
                 # Filter by the effective date (taken date, or upload timestamp)
                 where.append("strftime('%Y', COALESCE(photo_taken_date, upload_timestamp)) = ? AND strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) = ?")
@@ -1355,6 +1384,693 @@ def gallery():
 
     return render_template('gallery.html', stats=stats, available_periods=available_periods,
                            photos=photos, selected_period=selected_period, pagination=pagination)
+
+
+@app.route('/map')
+def map_view():
+    """Render an interactive map view showing photos by approximate location.
+
+    The client will fetch marker data from /api/photos_for_map. Photos without
+    GPS coordinates will be given a fallback location. The fallback latitude
+    and longitude can be configured via environment variables
+    FALLBACK_LAT and FALLBACK_LON. If not set, a default centroid (ZIP/area
+    46106) is used — change via env var if you want a different default.
+    """
+    # Expose fallback coordinates to the template so the client can center
+    try:
+        fallback_lat = float(os.environ.get('FALLBACK_LAT', os.environ.get('DEFAULT_LAT', '39.7684')))
+    except Exception:
+        fallback_lat = 39.7684
+    try:
+        fallback_lon = float(os.environ.get('FALLBACK_LON', os.environ.get('DEFAULT_LON', '-86.1581')))
+    except Exception:
+        fallback_lon = -86.1581
+
+    return render_template('map.html', fallback_lat=fallback_lat, fallback_lon=fallback_lon)
+
+
+@app.route('/api/photos_for_map')
+def api_photos_for_map():
+    """Return JSON list of photos with lat/lon (using fallback when missing).
+
+    Response format: { photos: [ {id, thumbnail_url, lat, lon, original_filename}, ... ] }
+    """
+    db_cfg = get_db_config()
+    conn = get_db_connection()
+    photos = []
+
+    # Load fallback coords from env (same defaults as map_view)
+    try:
+        fallback_lat = float(os.environ.get('FALLBACK_LAT', os.environ.get('DEFAULT_LAT', '39.7684')))
+    except Exception:
+        fallback_lat = 39.7684
+    try:
+        fallback_lon = float(os.environ.get('FALLBACK_LON', os.environ.get('DEFAULT_LON', '-86.1581')))
+    except Exception:
+        fallback_lon = -86.1581
+
+    if not conn:
+        return jsonify({'photos': [], 'error': 'database unavailable'}), 503
+
+    try:
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute('SELECT id, original_filename, gps_latitude, gps_longitude FROM photos')
+            rows = cur.fetchall()
+            for r in rows:
+                pid = r.get('id')
+                name = r.get('original_filename')
+                lat = r.get('gps_latitude')
+                lon = r.get('gps_longitude')
+                try:
+                    lat = float(lat) if lat is not None else None
+                except Exception:
+                    lat = None
+                try:
+                    lon = float(lon) if lon is not None else None
+                except Exception:
+                    lon = None
+                if lat is None or lon is None:
+                    lat = fallback_lat
+                    lon = fallback_lon
+                photos.append({
+                    'id': pid,
+                    'original_filename': name,
+                    'thumbnail_url': url_for('serve_thumbnail', photo_id=pid),
+                    'lat': lat,
+                    'lon': lon
+                })
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT id, original_filename, gps_latitude, gps_longitude FROM photos')
+            rows = cur.fetchall()
+            for r in rows:
+                pid = r[0]
+                name = r[1]
+                lat = r[2] if len(r) > 2 else None
+                lon = r[3] if len(r) > 3 else None
+                try:
+                    lat = float(lat) if lat is not None else None
+                except Exception:
+                    lat = None
+                try:
+                    lon = float(lon) if lon is not None else None
+                except Exception:
+                    lon = None
+                if lat is None or lon is None:
+                    lat = fallback_lat
+                    lon = fallback_lon
+                photos.append({
+                    'id': pid,
+                    'original_filename': name,
+                    'thumbnail_url': url_for('serve_thumbnail', photo_id=pid),
+                    'lat': lat,
+                    'lon': lon
+                })
+    except Exception as e:
+        logger.exception('Error building photos_for_map: %s', e)
+        return jsonify({'photos': [], 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    return jsonify({'photos': photos})
+
+
+def _ensure_delete_columns(conn, db_cfg):
+    """Ensure photos table has columns for soft-delete support.
+
+    Adds: is_deleted (INT/BOOLEAN), deleted_at (TEXT), deleted_from (TEXT)
+    """
+    try:
+        if db_cfg.get_database_type() == 'postgres':
+            cur = conn.cursor()
+            # Use IF NOT EXISTS to avoid errors on repeated calls
+            try:
+                cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS is_deleted boolean DEFAULT FALSE")
+            except Exception:
+                # Older Postgres may not support IF NOT EXISTS — ignore if column exists
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN is_deleted boolean DEFAULT FALSE")
+                except Exception:
+                    pass
+            try:
+                cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS deleted_at timestamptz")
+            except Exception:
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN deleted_at timestamptz")
+                except Exception:
+                    pass
+            try:
+                cur.execute("ALTER TABLE photos ADD COLUMN IF NOT EXISTS deleted_from text")
+            except Exception:
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN deleted_from text")
+                except Exception:
+                    pass
+            try:
+                conn.commit()
+            except Exception:
+                pass
+        else:
+            cur = conn.cursor()
+            # SQLite: check PRAGMA table_info
+            cur.execute("PRAGMA table_info(photos)")
+            cols = [r[1] for r in cur.fetchall()]
+            if 'is_deleted' not in cols:
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                except Exception:
+                    pass
+            if 'deleted_at' not in cols:
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN deleted_at TEXT")
+                except Exception:
+                    pass
+            if 'deleted_from' not in cols:
+                try:
+                    cur.execute("ALTER TABLE photos ADD COLUMN deleted_from TEXT")
+                except Exception:
+                    pass
+            try:
+                conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception('Failed to ensure delete columns')
+
+
+@app.route('/photo/<photo_id>/delete', methods=['POST'])
+@require_admin_token
+def photo_delete(photo_id):
+    """Soft-delete a photo: move files to deleted area and mark DB record."""
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(url_for('gallery'))
+
+    db_cfg = get_db_config()
+    try:
+        _ensure_delete_columns(conn, db_cfg)
+        # Lookup current local path
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute('SELECT local_path FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('gallery'))
+            local_path = row.get('local_path')
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT local_path FROM photos WHERE id = ?', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('gallery'))
+            local_path = row[0]
+
+        storage = get_storage()
+        # Move original
+        try:
+            new_rel = storage.move_to_deleted(local_path)
+        except Exception:
+            new_rel = local_path
+
+        # Move thumbnail if present
+        thumb_moved = False
+        try:
+            thumb_name = f"{photo_id}.jpg"
+            for root, dirs, files in os.walk(storage.thumbnails_path):
+                if thumb_name in files:
+                    abs_thumb = os.path.join(root, thumb_name)
+                    rel_thumb = os.path.relpath(abs_thumb, storage.base_path)
+                    storage.move_to_deleted(rel_thumb)
+                    thumb_moved = True
+                    break
+        except Exception:
+            logger.exception('Thumbnail move failed for %s', photo_id)
+
+        # Update DB: set is_deleted, deleted_at, deleted_from, local_path
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET is_deleted = TRUE, deleted_at = %s, deleted_from = %s, local_path = %s WHERE id = %s', (now_iso, local_path, new_rel, photo_id))
+            else:
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET is_deleted = 1, deleted_at = ?, deleted_from = ?, local_path = ? WHERE id = ?', (now_iso, local_path, new_rel, photo_id))
+            conn.commit()
+            flash('Photo moved to deleted area. Confirm deletion on the Deleted page.', 'info')
+        except Exception as e:
+            logger.exception('Failed to mark photo deleted in DB: %s', e)
+            flash('Failed to update database for deletion', 'danger')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    # Respect 'next' parameter so UI returns to the same filtered view
+    try:
+        next_url = request.form.get('next') or request.args.get('next')
+    except Exception:
+        next_url = None
+
+    if next_url and isinstance(next_url, str):
+        # Only allow local redirects
+        if next_url.startswith('/'):
+            return redirect(next_url)
+        # full path like '/gallery?year=..' may include leading slash already
+    return redirect(url_for('gallery'))
+
+
+@app.route('/photos/bulk_delete', methods=['POST'])
+@require_admin_token
+def photos_bulk_delete():
+    """Bulk soft-delete photos from gallery/index views. Accepts form field 'photo_id' (multiple) or JSON { photo_ids: [...] }.
+
+    This mirrors the behavior of single-photo /photo/<id>/delete: move files to deleted area and mark DB record.
+    """
+    try:
+        if request.is_json:
+            payload = request.get_json()
+            ids = payload.get('photo_ids') or []
+        else:
+            ids = request.form.getlist('photo_id')
+    except Exception:
+        flash('Invalid bulk delete request', 'danger')
+        return redirect(url_for('gallery'))
+
+    if not ids:
+        flash('No photos selected for deletion.', 'warning')
+        return redirect(url_for('gallery'))
+
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(url_for('gallery'))
+
+    db_cfg = get_db_config()
+    storage = get_storage()
+
+    try:
+        # Ensure delete columns exist
+        _ensure_delete_columns(conn, db_cfg)
+        results = {'moved': 0, 'errors': 0}
+        for pid in ids:
+            try:
+                # lookup local_path
+                if db_cfg.get_database_type() == 'postgres':
+                    from psycopg2.extras import RealDictCursor
+                    cur = conn.cursor(cursor_factory=RealDictCursor)
+                    cur.execute('SELECT local_path FROM photos WHERE id = %s', (pid,))
+                    row = cur.fetchone()
+                    if not row:
+                        results['errors'] += 1
+                        continue
+                    local_path = row.get('local_path')
+                else:
+                    cur = conn.cursor()
+                    cur.execute('SELECT local_path FROM photos WHERE id = ?', (pid,))
+                    row = cur.fetchone()
+                    if not row:
+                        results['errors'] += 1
+                        continue
+                    local_path = row[0]
+
+                # Move original
+                try:
+                    new_rel = storage.move_to_deleted(local_path)
+                except Exception:
+                    new_rel = local_path
+
+                # Move thumbnail if present
+                try:
+                    thumb_name = f"{pid}.jpg"
+                    for root, dirs, files in os.walk(storage.thumbnails_path):
+                        if thumb_name in files:
+                            abs_thumb = os.path.join(root, thumb_name)
+                            rel_thumb = os.path.relpath(abs_thumb, storage.base_path)
+                            storage.move_to_deleted(rel_thumb)
+                            break
+                except Exception:
+                    logger.exception('Thumbnail move failed for %s', pid)
+
+                # Update DB: set is_deleted, deleted_at, deleted_from, local_path
+                now_iso = datetime.now(timezone.utc).isoformat()
+                try:
+                    if db_cfg.get_database_type() == 'postgres':
+                        ucur = conn.cursor()
+                        ucur.execute('UPDATE photos SET is_deleted = TRUE, deleted_at = %s, deleted_from = %s, local_path = %s WHERE id = %s', (now_iso, local_path, new_rel, pid))
+                    else:
+                        ucur = conn.cursor()
+                        ucur.execute('UPDATE photos SET is_deleted = 1, deleted_at = ?, deleted_from = ?, local_path = ? WHERE id = ?', (now_iso, local_path, new_rel, pid))
+                    conn.commit()
+                    results['moved'] += 1
+                except Exception:
+                    logger.exception('Failed to mark photo deleted in DB for %s', pid)
+                    results['errors'] += 1
+            except Exception:
+                logger.exception('Error processing bulk delete for %s', pid)
+                results['errors'] += 1
+
+        flash(f"Bulk delete complete: moved={results['moved']}, errors={results['errors']}", 'info')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    # Redirect back to gallery preserving query string if provided
+    try:
+        next_url = request.form.get('next') or request.args.get('next')
+    except Exception:
+        next_url = None
+
+    if next_url and isinstance(next_url, str) and next_url.startswith('/'):
+        return redirect(next_url)
+    return redirect(url_for('gallery'))
+
+
+@app.route('/deleted')
+@require_admin_token
+def deleted_list():
+    """Show soft-deleted photos awaiting permanent confirmation."""
+    conn = get_db_connection()
+    photos = []
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return render_template('deleted.html', photos=[])
+    try:
+        db_cfg = get_db_config()
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            # include thumbnail column for previews when available
+            cur.execute('SELECT id, original_filename, local_path, deleted_at, deleted_from, thumbnail FROM photos WHERE is_deleted = TRUE ORDER BY deleted_at DESC')
+            rows = cur.fetchall()
+            for r in rows:
+                photos.append({
+                    'id': r.get('id'),
+                    'original_filename': r.get('original_filename'),
+                    'local_path': r.get('local_path'),
+                    'deleted_at': r.get('deleted_at'),
+                    'deleted_from': r.get('deleted_from'),
+                    'thumbnail': r.get('thumbnail')
+                })
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT id, original_filename, local_path, deleted_at, deleted_from, thumbnail FROM photos WHERE is_deleted = 1 ORDER BY deleted_at DESC')
+            rows = cur.fetchall()
+            for r in rows:
+                # sqlite rows are tuples; be defensive about length
+                pid = r[0]
+                name = r[1] if len(r) > 1 else None
+                local = r[2] if len(r) > 2 else None
+                d_at = r[3] if len(r) > 3 else None
+                d_from = r[4] if len(r) > 4 else None
+                thumb = r[5] if len(r) > 5 else None
+                photos.append({'id': pid, 'original_filename': name, 'local_path': local, 'deleted_at': d_at, 'deleted_from': d_from, 'thumbnail': thumb})
+    except Exception:
+        logger.exception('Failed to load deleted photos')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    # Prepare thumbnail sources: prefer DB-stored thumbnail bytes; otherwise fall back to serve_thumbnail URL
+    import base64
+    from flask import url_for
+    storage = get_storage()
+    for p in photos:
+        p['thumbnail_src'] = None
+        try:
+            thumb = p.get('thumbnail')
+            if thumb:
+                # thumbnail may be bytes, memoryview, or base64 string
+                binary = None
+                if isinstance(thumb, (bytes, bytearray)):
+                    binary = bytes(thumb)
+                elif hasattr(thumb, 'tobytes'):
+                    try:
+                        binary = thumb.tobytes()
+                    except Exception:
+                        binary = None
+                elif isinstance(thumb, str):
+                    # Attempt to decode base64 string if it looks like base64
+                    try:
+                        s = thumb
+                        padding = len(s) % 4
+                        if padding:
+                            s += '=' * (4 - padding)
+                        binary = base64.b64decode(s)
+                    except Exception:
+                        binary = None
+
+                if binary:
+                    try:
+                        p['thumbnail_src'] = 'data:image/jpeg;base64,' + base64.b64encode(binary).decode('ascii')
+                    except Exception:
+                        p['thumbnail_src'] = None
+        except Exception:
+            p['thumbnail_src'] = None
+
+        # If no embedded thumbnail, fall back to thumbnail endpoint which may serve filesystem thumbnail
+        if not p.get('thumbnail_src'):
+            try:
+                p['thumbnail_url'] = url_for('serve_thumbnail', photo_id=p.get('id'))
+            except Exception:
+                p['thumbnail_url'] = None
+
+    return render_template('deleted.html', photos=photos)
+
+
+
+@app.route('/deleted/bulk', methods=['POST'])
+@require_admin_token
+def deleted_bulk_action():
+    """Handle bulk restore or permanent-delete actions from the Deleted page."""
+    try:
+        if request.is_json:
+            payload = request.get_json()
+            action = payload.get('action')
+            ids = payload.get('photo_ids') or []
+        else:
+            action = request.form.get('action')
+            ids = request.form.getlist('photo_id')
+    except Exception:
+        flash('Invalid bulk request', 'danger')
+        return redirect(url_for('deleted_list'))
+
+    if not ids:
+        flash('No photos selected for bulk action.', 'warning')
+        return redirect(url_for('deleted_list'))
+
+    storage = get_storage()
+    db_cfg = get_db_config()
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(url_for('deleted_list'))
+
+    try:
+        results = {'restored': 0, 'deleted': 0, 'errors': 0}
+        for pid in ids:
+            try:
+                # lookup local_path and deleted_from
+                if db_cfg.get_database_type() == 'postgres':
+                    from psycopg2.extras import RealDictCursor
+                    cur = conn.cursor(cursor_factory=RealDictCursor)
+                    cur.execute('SELECT local_path, deleted_from FROM photos WHERE id = %s', (pid,))
+                    r = cur.fetchone()
+                    if not r:
+                        results['errors'] += 1
+                        continue
+                    local_path = r.get('local_path')
+                    deleted_from = r.get('deleted_from')
+                else:
+                    cur = conn.cursor()
+                    cur.execute('SELECT local_path, deleted_from FROM photos WHERE id = ?', (pid,))
+                    r = cur.fetchone()
+                    if not r:
+                        results['errors'] += 1
+                        continue
+                    local_path = r[0]
+                    deleted_from = r[1] if len(r) > 1 else None
+
+                if action == 'restore':
+                    try:
+                        if deleted_from:
+                            new_rel = storage.move_from_deleted(local_path, deleted_from)
+                        else:
+                            new_rel = storage.move_from_deleted(local_path, None)
+                        # update DB
+                        if db_cfg.get_database_type() == 'postgres':
+                            ucur = conn.cursor()
+                            ucur.execute('UPDATE photos SET local_path = %s, deleted_from = NULL, deleted_at = NULL, is_deleted = FALSE WHERE id = %s', (new_rel or deleted_from, pid))
+                        else:
+                            ucur = conn.cursor()
+                            ucur.execute('UPDATE photos SET local_path = ?, deleted_from = NULL, deleted_at = NULL, is_deleted = 0 WHERE id = ?', (new_rel or deleted_from, pid))
+                        conn.commit()
+                        results['restored'] += 1
+                    except Exception:
+                        logger.exception('Bulk restore failed for %s', pid)
+                        results['errors'] += 1
+                elif action == 'permanent_delete':
+                    try:
+                        try:
+                            storage.delete_photo(local_path)
+                        except Exception:
+                            logger.exception('Failed to delete file during bulk permanent delete %s', pid)
+                        try:
+                            thumb_name = f"{pid}.jpg"
+                            for root, dirs, files in os.walk(storage.thumbnails_path):
+                                if thumb_name in files:
+                                    os.remove(os.path.join(root, thumb_name))
+                                    break
+                        except Exception:
+                            logger.exception('Failed to delete thumbnail during bulk permanent delete %s', pid)
+                        if db_cfg.get_database_type() == 'postgres':
+                            dcur = conn.cursor()
+                            dcur.execute('DELETE FROM photos WHERE id = %s', (pid,))
+                        else:
+                            dcur = conn.cursor()
+                            dcur.execute('DELETE FROM photos WHERE id = ?', (pid,))
+                        conn.commit()
+                        results['deleted'] += 1
+                    except Exception:
+                        logger.exception('Bulk permanent delete failed for %s', pid)
+                        results['errors'] += 1
+                else:
+                    results['errors'] += 1
+            except Exception:
+                logger.exception('Error processing bulk action for %s', pid)
+                results['errors'] += 1
+        flash(f"Bulk action complete: restored={results['restored']}, deleted={results['deleted']}, errors={results['errors']}", 'info')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    return redirect(url_for('deleted_list'))
+
+
+@app.route('/deleted/<photo_id>/restore', methods=['POST'])
+@require_admin_token
+def deleted_restore(photo_id):
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(url_for('deleted_list'))
+    try:
+        db_cfg = get_db_config()
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute('SELECT local_path, deleted_from FROM photos WHERE id = %s', (photo_id,))
+            r = cur.fetchone()
+            if not r:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_list'))
+            local_path = r.get('local_path')
+            deleted_from = r.get('deleted_from')
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT local_path, deleted_from FROM photos WHERE id = ?', (photo_id,))
+            r = cur.fetchone()
+            if not r:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_list'))
+            local_path = r[0]
+            deleted_from = r[1] if len(r) > 1 else None
+
+        storage = get_storage()
+        restored_rel = None
+        try:
+            if deleted_from:
+                restored_rel = storage.move_from_deleted(local_path, deleted_from)
+            else:
+                restored_rel = storage.move_from_deleted(local_path, None)
+        except Exception:
+            logger.exception('Failed to restore file from deleted for %s', photo_id)
+
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = %s, deleted_from = NULL, deleted_at = NULL, is_deleted = FALSE WHERE id = %s', (restored_rel or deleted_from, photo_id))
+            else:
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = ?, deleted_from = NULL, deleted_at = NULL, is_deleted = 0 WHERE id = ?', (restored_rel or deleted_from, photo_id))
+            conn.commit()
+            flash('Photo restored.', 'success')
+        except Exception:
+            logger.exception('Failed to update DB when restoring %s', photo_id)
+            flash('Failed to update database on restore', 'danger')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    return redirect(url_for('deleted_list'))
+
+
+@app.route('/deleted/<photo_id>/permanent_delete', methods=['POST'])
+@require_admin_token
+def deleted_permanent(photo_id):
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(url_for('deleted_list'))
+    try:
+        db_cfg = get_db_config()
+        if db_cfg.get_database_type() == 'postgres':
+            from psycopg2.extras import RealDictCursor
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute('SELECT local_path FROM photos WHERE id = %s', (photo_id,))
+            r = cur.fetchone()
+            if not r:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_list'))
+            local_path = r.get('local_path')
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT local_path FROM photos WHERE id = ?', (photo_id,))
+            r = cur.fetchone()
+            if not r:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_list'))
+            local_path = r[0]
+
+        storage = get_storage()
+        # Delete file and thumbnail
+        try:
+            storage.delete_photo(local_path)
+        except Exception:
+            logger.exception('Failed to delete photo file %s', local_path)
+
+        try:
+            thumb_name = f"{photo_id}.jpg"
+            for root, dirs, files in os.walk(storage.thumbnails_path):
+                if thumb_name in files:
+                    os.remove(os.path.join(root, thumb_name))
+                    break
+        except Exception:
+            logger.exception('Failed to delete thumbnail for %s', photo_id)
+
+        # Remove DB record
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                dcur = conn.cursor()
+                dcur.execute('DELETE FROM photos WHERE id = %s', (photo_id,))
+            else:
+                dcur = conn.cursor()
+                dcur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
+            conn.commit()
+            flash('Photo permanently deleted.', 'success')
+        except Exception:
+            logger.exception('Failed to remove DB record for %s', photo_id)
+            flash('Failed to remove database record', 'danger')
+    finally:
+        if conn:
+            return_db_connection(conn)
+
+    return redirect(url_for('deleted_list'))
 
 @app.route('/api/stats')
 def api_stats():

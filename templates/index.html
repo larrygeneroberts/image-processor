@@ -1,15 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local Photo Analyzer</title>
-    <!-- Inline favicon to avoid 404 noise from browsers requesting /favicon.ico -->
-    <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' fill='%230d6efd'/><path d='M20 24h24l4 6h6v18H10V30h6z' fill='%23fff'/></svg>">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="/static/css/improved-design.css" rel="stylesheet">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Local Photo Analyzer{% endblock %}
+
+{% block extra_head %}
+<!-- Inline favicon to avoid 404 noise from browsers requesting /favicon.ico -->
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' fill='%230d6efd'/><path d='M20 24h24l4 6h6v18H10V30h6z' fill='%23fff'/></svg>">
+<link href="/static/css/improved-design.css" rel="stylesheet">
+<style>
         /* Page-specific styles */
         .photo-grid {
             display: grid;
@@ -162,28 +159,21 @@
             }
         }
     </style>
-</head>
-<body>
+{% endblock %}
+
+{% block content %}
     <div class="container-fluid p-4">
         <div class="main-container p-4 position-relative">
             <div id="status-badge" class="status-badge">
                 <i class="fas fa-circle-notch fa-spin"></i> Checking...
             </div>
-            
+
             <div class="text-center mb-4">
                 <h1 class="display-4 fw-bold text-primary mb-3">
                     <i class="fas fa-camera-retro me-3"></i>Local Photo Analyzer
                 </h1>
                 <p class="lead text-muted">Connected to Postgres Database</p>
-                <div class="mt-3">
-                    <a href="/gallery" class="btn btn-outline-primary me-2">
-                        <i class="fas fa-images me-2"></i>Gallery
-                    </a>
-                    <!-- Timeline removed -->
-                    <a href="/admin" class="btn btn-outline-secondary">
-                        <i class="fas fa-cogs me-2"></i>Admin
-                    </a>
-                </div>
+                <!-- Inline page navigation removed — use top navbar only -->
             </div>
             
             <!-- Statistics -->
@@ -311,10 +301,21 @@
             
             <div id="photos-container">
                 {% if photos %}
-                    <div class="photo-grid">
+                    <form id="bulkDeleteFormIndex" method="post" action="/photos/bulk_delete" onsubmit="return confirm('Move selected photos to the Deleted area? You can restore them from the Deleted page.')">
+                        <input type="hidden" name="next" value="{{ request.full_path }}" />
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="mb-0">Recent Photos</h5>
+                            <div>
+                                <label class="me-3 text-muted"><input type="checkbox" id="selectAllChkIndex"> Select All</label>
+                                <button type="submit" id="bulkDeleteBtnIndex" class="btn btn-danger btn-sm" disabled>
+                                    <i class="fas fa-trash me-1"></i>Delete Selected
+                                </button>
+                            </div>
+                        </div>
+                        <div class="photo-grid">
                         {% for photo in photos %}
                         <div class="photo-card position-relative">
-                            
+                            <input type="checkbox" class="select-checkbox-index" name="photo_id" value="{{ photo.id }}" onclick="toggleBulkIndex(event)">
                             <img src="/photo/{{ photo.id }}/thumbnail" 
                                  alt="{{ photo.original_filename }}" 
                                  class="photo-thumbnail"
@@ -357,6 +358,9 @@
         </div>
     </div>
 
+{% endblock %}
+
+{% block extra_scripts %}
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Check database connection status
@@ -493,7 +497,6 @@
             // Read server limits for preview warnings
             const fileInputEl = document.getElementById('fileInput');
             const maxBytes = parseInt(fileInputEl.dataset.maxBytes || '{{ max_upload_bytes }}', 10) || {{ max_upload_bytes }};
-
             let totalSize = 0;
             let previewHtml = `
                 <div class="alert alert-info">
@@ -879,8 +882,8 @@
                             <div class="d-flex justify-content-between align-items-start">
                                 <div>
                                     <h6 class="mb-1">
-                                        <i class="fas ${iconClass} me-2"></i>
-                                        ${result.filename}
+                            </body>
+                            </html>
                                     </h6>
                                     <p class="mb-1">
                                         ${result.success ? (result.message || 'Uploaded successfully') : (result.message || result.error || 'Failed')}
@@ -920,6 +923,25 @@
     </script>
 
     <script>
+        // Bulk selection helpers for index/home
+        function toggleBulkIndex(e) {
+            if (e) e.stopPropagation();
+            const any = Array.from(document.querySelectorAll('.select-checkbox-index')).some(cb => cb.checked);
+            const btn = document.getElementById('bulkDeleteBtnIndex');
+            if (btn) btn.disabled = !any;
+        }
+
+        (function() {
+            const selectAll = document.getElementById('selectAllChkIndex');
+            if (!selectAll) return;
+            selectAll.addEventListener('change', function() {
+                const checked = !!this.checked;
+                document.querySelectorAll('.select-checkbox-index').forEach(cb => { cb.checked = checked; });
+                const btn = document.getElementById('bulkDeleteBtnIndex');
+                if (btn) btn.disabled = !checked;
+            });
+        })();
+
     // Global error handler for any remaining fetch issues
     window.addEventListener('unhandledrejection', function(event) {
         console.error('Unhandled promise rejection:', event.reason);
@@ -974,5 +996,7 @@
     });
     </script>
     
+{% endblock %}
+
 </body>
 </html>

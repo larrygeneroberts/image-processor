@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Photo Map{% endblock %}
+
+{% block extra_head %}
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<!-- MarkerCluster CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  #map { height: 85vh; width: 100%; }
+  .leaflet-popup-content img { display: block; margin: 0 auto 6px; max-width: 180px; height: auto; }
+  .map-header { padding: 12px; background: #f6f6f6; border-bottom: 1px solid #ddd; }
+  .map-header h1 { margin: 0; font-size: 1.1rem; }
+  .map-status {
+    position: absolute; right: 12px; top: 12px; z-index: 1000;
+    background: rgba(255,255,255,0.9); padding: 6px 10px; border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2); font-size: 0.9rem;
+  }
+  /* Small div-icon for markers when clustering is used */
+  .dot-icon {
+    width: 12px; height: 12px; display: block; border-radius: 50%; background: #3399ff; border: 2px solid #fff; box-shadow: 0 0 2px rgba(0,0,0,0.4);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="map-header">
+    <h1>Photo Map</h1>
+    <p style="margin:4px 0 0; font-size:0.9rem; color:#444;">Markers show photo thumbnails. Photos without GPS use the default location.</p>
+    <div style="margin-top:8px">
+      <label style="font-size:0.9rem; color:#444"><input id="clusterToggle" type="checkbox" checked style="margin-right:6px"/> Enable clustering</label>
+    </div>
+  </div>
+  <div id="map"></div>
+  <div id="map-status" class="map-status">Loading...</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- MarkerCluster JS -->
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+    // Check that Leaflet loaded; if SRI failed or network blocked the resource
+    // provide a user-visible message instead of throwing a ReferenceError.
+    if (typeof L === 'undefined') {
+      // map-status element is present above
+      try {
+        document.getElementById('map-status').textContent = 'Map library failed to load. Check network or SRI settings.';
+      } catch (e) {
+        // Nothing we can do in this environment
+      }
+      throw new Error('Leaflet library not loaded');
+    }
+    const fallbackLat = {{ fallback_lat | tojson }};
+    const fallbackLon = {{ fallback_lon | tojson }};
+
+  const map = L.map('map').setView([fallbackLat, fallbackLon], 10);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Fetch photo markers
+    fetch('{{ url_for("api_photos_for_map") }}')
+      .then(r => r.json())
+      .then(data => {
+        if (!data || !data.photos) {
+          document.getElementById('map-status').textContent = 'No photos returned';
+          return;
+        }
+            const photos = data.photos;
+            const markers = [];
+            const group = L.featureGroup();
+            // prepare clustering groups
+            const clusterGroup = L.markerClusterGroup();
+            const nonClusterGroup = L.layerGroup();
+            const useClustering = document.getElementById('clusterToggle').checked;
+
+            photos.forEach(p => {
+              try {
+                const lat = parseFloat(p.lat);
+                const lon = parseFloat(p.lon);
+                if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+
+                // Create a marker suitable for clustering (use a simple divIcon)
+                const divIcon = L.divIcon({ className: 'dot-icon', iconSize: [12, 12] });
+                const markerForCluster = L.marker([lat, lon], { icon: divIcon });
+                const markerForMap = L.circleMarker([lat, lon], { radius: 6, color: '#0078ff', fillColor: '#3399ff', fillOpacity: 0.9 });
+
+                const thumb = p.thumbnail_url;
+                const title = p.original_filename || '';
+                const popupHtml = `<div style="text-align:center"><a href="/photo/${p.id}" target="_blank"><img src="${thumb}" alt="${title}"/></a><div style="margin-top:6px">${title}</div></div>`;
+
+                markerForCluster.bindPopup(popupHtml);
+                markerForMap.bindPopup(popupHtml);
+
+                clusterGroup.addLayer(markerForCluster);
+                nonClusterGroup.addLayer(markerForMap);
+                group.addLayer(markerForMap);
+                markers.push({cluster: markerForCluster, plain: markerForMap});
+              } catch (e) {
+                console.error('marker error', e, p);
+              }
+            });
+
+            // Add either cluster or non-cluster group to map
+            if (useClustering) {
+              clusterGroup.addTo(map);
+            } else {
+              nonClusterGroup.addTo(map);
+            }
+
+            // toggle handler
+            document.getElementById('clusterToggle').addEventListener('change', function(e) {
+              const enabled = e.target.checked;
+              if (enabled) {
+                map.removeLayer(nonClusterGroup);
+                map.addLayer(clusterGroup);
+              } else {
+                map.removeLayer(clusterGroup);
+                map.addLayer(nonClusterGroup);
+              }
+            });
+
+        // Update status with count
+        document.getElementById('map-status').textContent = `${markers.length} marker(s)`;
+
+        // Fit map to visible markers when there are multiple, otherwise keep fallback zoom
+        if (markers.length > 1) {
+          map.fitBounds(group.getBounds().pad(0.2));
+        } else if (markers.length === 1) {
+          map.setView(markers[0].getLatLng(), 14);
+        }
+      })
+      .catch(err => console.error('Failed to load photos for map', err));
+  </script>
+{% endblock %}
+

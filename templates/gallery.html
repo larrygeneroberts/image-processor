@@ -1,13 +1,10 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Gallery - Local Photo Analyzer</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="/static/css/improved-design.css" rel="stylesheet">
-    <style>
+{% extends "base.html" %}
+
+{% block title %}Photo Gallery - Local Photo Analyzer{% endblock %}
+
+{% block extra_head %}
+<link href="/static/css/improved-design.css" rel="stylesheet">
+<style>
         /* Clean gallery styles */
         .gallery-header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -78,6 +75,15 @@
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
             transition: all 0.3s ease;
             cursor: pointer;
+        }
+
+        .select-checkbox {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 20;
+            width: 20px;
+            height: 20px;
         }
         
         .photo-card:hover {
@@ -230,8 +236,9 @@
             padding: 0 4px;
         }
     </style>
-</head>
-<body>
+{% endblock %}
+
+{% block content %}
     <div class="container-fluid p-4">
         <div class="main-container p-4">
             <!-- Header -->
@@ -247,17 +254,7 @@
                     {% endif %}
                 </p>
                 
-                <!-- Navigation -->
-                <div class="mt-3">
-                    <a href="/" class="btn btn-light me-2">
-                        <i class="fas fa-home me-2"></i>Home
-                    </a>
-
-                    </a>
-                    <a href="/admin" class="btn btn-outline-light">
-                        <i class="fas fa-cogs me-2"></i>Admin
-                    </a>
-                </div>
+                <!-- Inline page navigation removed — use top navbar only -->
             </div>
             
             <!-- Statistics -->
@@ -311,7 +308,7 @@
 
                         <div class="text-center mt-3">
                             <button id="goToPeriodBtn" class="btn btn-primary">View Selected Period</button>
-                            <a href="{{ url_for('gallery') }}" class="btn btn-outline-secondary ms-2">Clear Selection</a>
+                            <button type="button" id="clearSelectionBtn" class="btn btn-outline-secondary ms-2">Clear Selection</button>
                         </div>
                     </div>
 
@@ -352,7 +349,7 @@
                         }
 
                         if (periods.length === 0) {
-                            document.getElementById('periodSliderContainer').innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h5>No photos found</h5><p>Upload some photos to see them organized by month and year</p><a href="/" class="btn btn-primary"><i class="fas fa-upload me-2"></i>Upload Photos</a></div>';
+                            document.getElementById('periodSliderContainer').innerHTML = '<div class="empty-state"><i class="fas fa-calendar-times"></i><h5>No photos found</h5><p>Upload some photos to see them organized by month and year</p><button type="button" class="btn btn-primary"><i class="fas fa-upload me-2"></i>Upload Photos</button></div>';
                         } else {
                             range.min = 0;
                             range.max = periods.length - 1;
@@ -451,6 +448,17 @@
                                 const idx = parseInt(range.value, 10);
                                 navigateIndex(idx);
                             });
+                            // Clear selection button: reset slider and view earliest period
+                            const clearBtn = document.getElementById('clearSelectionBtn');
+                            if (clearBtn) {
+                                clearBtn.addEventListener('click', () => {
+                                    try {
+                                        range.value = 0;
+                                        currentLabel.textContent = formatLabel(periods[0]);
+                                        navigateIndex(0);
+                                    } catch (e) { /* ignore if variables not yet available */ }
+                                });
+                            }
                             // Allow double-click to jump to earliest
                             leftLabel.addEventListener('dblclick', () => { range.value = 0; currentLabel.textContent = formatLabel(periods[0]); navigateIndex(0); });
 
@@ -492,9 +500,9 @@
                         <i class="fas fa-calendar-times"></i>
                         <h5>No photos found</h5>
                         <p>Upload some photos to see them organized by month and year</p>
-                        <a href="/" class="btn btn-primary">
+                        <button type="button" class="btn btn-primary">
                             <i class="fas fa-upload me-2"></i>Upload Photos
-                        </a>
+                        </button>
                     </div>
                 {% endif %}
             </div>
@@ -502,17 +510,26 @@
             <!-- Photo Grid -->
                 {% if photos %}
                 <div id="photosArea">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h4>
-                        <i class="fas fa-images me-2"></i>
-                        {{ selected_period.month_name }} {{ selected_period.year }} Photos
-                    </h4>
-                    <span class="badge bg-primary fs-6">{{ pagination.total }} photos</span>
-                </div>
-                
-                <div id="photoGrid" class="photo-grid">
+                <form id="bulkDeleteForm" method="post" action="/photos/bulk_delete" onsubmit="return confirm('Move selected photos to the Deleted area? You can restore them from the Deleted page.')">
+                    <input type="hidden" name="next" value="{{ request.full_path }}" />
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4>
+                            <i class="fas fa-images me-2"></i>
+                            {{ selected_period.month_name }} {{ selected_period.year }} Photos
+                        </h4>
+                        <div>
+                            <label class="me-3 text-muted"><input type="checkbox" id="selectAllChk"> Select All</label>
+                            <span class="badge bg-primary fs-6 me-3">{{ pagination.total }} photos</span>
+                            <button type="submit" id="bulkDeleteBtn" class="btn btn-danger btn-sm" disabled>
+                                <i class="fas fa-trash me-1"></i>Delete Selected
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="photoGrid" class="photo-grid">
                     {% for photo in photos %}
-                        <div class="photo-card" onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')">
+                        <div class="photo-card position-relative" onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')">
+                            <input type="checkbox" class="select-checkbox" name="photo_id" value="{{ photo.id }}" onclick="event.stopPropagation(); toggleBulkButtons();">
                             <img src="/photo/{{ photo.id }}/thumbnail" 
                                  alt="{{ photo.original_filename }}" 
                                  class="photo-thumbnail"
@@ -537,6 +554,14 @@
                                             {{ photo.image_width }}×{{ photo.image_height }}
                                         {% endif %}
                                     </span>
+                                </div>
+                                <div class="mt-2">
+                                    <form method="post" action="/photo/{{ photo.id }}/delete" onsubmit="return confirm('Move this photo to the Deleted area? You can restore it from the Deleted page.')" style="display:inline" >
+                                        <input type="hidden" name="next" value="{{ request.full_path }}" />
+                                        <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </form>
                                 </div>
                             </div>
                         </div>
@@ -618,13 +643,13 @@
                 </div>
             {% elif selected_period %}
                 <div id="photosArea">
-                <div class="empty-state">
+                    <div class="empty-state">
                     <i class="fas fa-calendar-times"></i>
                     <h4>No photos found</h4>
                     <p>No photos found for {{ selected_period.month_name }} {{ selected_period.year }}</p>
-                    <a href="{{ url_for('gallery') }}" class="btn btn-outline-primary">
+                    <button type="button" class="btn btn-outline-primary">
                         <i class="fas fa-arrow-left me-2"></i>Choose Different Month
-                    </a>
+                    </button>
                 </div>
                 </div>
             {% endif %}
@@ -653,7 +678,9 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}
+
+{% block extra_scripts %}
     <script>
         let currentPhotoId = null;
         
@@ -728,5 +755,22 @@
             }
         });
     </script>
-</body>
-</html>
+    <script>
+        // Bulk selection helpers for gallery
+        function toggleBulkButtons() {
+            const any = Array.from(document.querySelectorAll('.select-checkbox')).some(cb => cb.checked);
+            const btn = document.getElementById('bulkDeleteBtn');
+            if (btn) btn.disabled = !any;
+        }
+
+        (function() {
+            const selectAll = document.getElementById('selectAllChk');
+            if (!selectAll) return;
+            selectAll.addEventListener('change', function() {
+                const checked = !!this.checked;
+                document.querySelectorAll('.select-checkbox').forEach(cb => { cb.checked = checked; });
+                toggleBulkButtons();
+            });
+        })();
+    </script>
+{% endblock %}
