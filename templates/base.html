@@ -10,16 +10,40 @@
   {%- if csrf_token is defined %}
   <meta name="csrf-token" content="{{ csrf_token() }}">
   {%- endif %}
+  {# Block for page-specific head additions (styles, meta) #}
+  {% block extra_head %}{% endblock %}
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">Photo Admin</a>
-            <div class="collapse navbar-collapse">
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbar" aria-controls="mainNavbar" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="mainNavbar">
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                    <li class="nav-item"><a class="nav-link" href="/">Dashboard</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">Home</a></li>
+                    <li class="nav-item"><a class="nav-link {% if request.path.startswith('/gallery') %}active{% endif %}" href="/gallery">Gallery</a></li>
+                    <li class="nav-item"><a class="nav-link {% if request.path.startswith('/map') %}active{% endif %}" href="/map">Map</a></li>
+                    
+                    {% if admin_available %}
+                    <li class="nav-item dropdown">
+                      <a class="nav-link dropdown-toggle {% if request.path.startswith('/admin') or request.path.startswith('/deleted') %}active{% endif %}" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">Admin</a>
+                      <ul class="dropdown-menu" aria-labelledby="adminDropdown">
+                        <li><a class="dropdown-item" href="/admin">Dashboard</a></li>
+                        <li><a class="dropdown-item" href="/admin/functions">Functions</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="/deleted">Deleted</a></li>
+                      </ul>
+                    </li>
+                    {% else %}
+                      <li class="nav-item"><a class="nav-link {% if request.path.startswith('/admin') %}active{% endif %}" href="/admin">Admin</a></li>
+                    {% endif %}
                 </ul>
+                <form class="d-flex" role="search" action="/gallery" method="get">
+                    <input class="form-control me-2" type="search" placeholder="Search filenames" aria-label="Search" name="q" value="{{ request.args.get('q','') }}">
+                    <button class="btn btn-outline-light" type="submit"><i class="fas fa-search"></i></button>
+                </form>
             </div>
         </div>
     </nav>
@@ -47,5 +71,7 @@
     });
   }
   </script>
+  {# Block for page-specific scripts to be included at bottom #}
+  {% block extra_scripts %}{% endblock %}
 </body>
 </html>

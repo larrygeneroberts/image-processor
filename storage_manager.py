@@ -276,6 +276,70 @@ class StorageManager:
         shutil.move(source_path, target_path)
         logger.info(f"Moved to processed: {target_path}")
         return os.path.relpath(target_path, self.base_path)
+
+    def move_to_deleted(self, relative_path, taken_date=None):
+        """Move a photo or thumbnail into the deleted area.
+
+        Args:
+            relative_path (str): Relative path from base_path
+            taken_date (datetime): Optional date to preserve directory grouping
+
+        Returns:
+            str: New relative path under the deleted area
+        """
+        source_path = self.get_photo_path(relative_path)
+        # Keep deleted items under a top-level `deleted/` directory
+        target_base = os.path.join(self.base_path, 'deleted')
+        # Use date grouping like other storage areas
+        if taken_date:
+            date_dir = taken_date.strftime('%Y-%m')
+        else:
+            date_dir = 'uncategorized'
+        target_dir = os.path.join(target_base, date_dir)
+        os.makedirs(target_dir, exist_ok=True)
+
+        filename = os.path.basename(relative_path)
+        target_path = os.path.join(target_dir, filename)
+        # Ensure unique name to avoid collisions
+        unique = self._generate_unique_filename(filename, target_dir)
+        target_path = os.path.join(target_dir, unique)
+        try:
+            shutil.move(source_path, target_path)
+            logger.info(f"Moved to deleted: {target_path}")
+            return os.path.relpath(target_path, self.base_path)
+        except FileNotFoundError:
+            logger.warning(f"Source not found when moving to deleted: {source_path}")
+            return relative_path
+
+    def move_from_deleted(self, deleted_relative_path, target_relative_path=None):
+        """Restore a file from the deleted area back to a target location.
+
+        Args:
+            deleted_relative_path (str): Current relative path under deleted/
+            target_relative_path (str): Desired relative destination under base_path. If None, attempt to move back to originals with same filename.
+
+        Returns:
+            str: New relative path after restoration
+        """
+        source = self.get_photo_path(deleted_relative_path)
+        if target_relative_path:
+            dest = self.get_photo_path(target_relative_path)
+            dest_dir = os.path.dirname(dest)
+            os.makedirs(dest_dir, exist_ok=True)
+        else:
+            # Default: move back under originals/uncategorized or preserve subdir under originals
+            filename = os.path.basename(deleted_relative_path)
+            dest_dir = os.path.join(self.originals_path, 'uncategorized')
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = os.path.join(dest_dir, filename)
+
+        try:
+            shutil.move(source, dest)
+            logger.info(f"Restored from deleted: {dest}")
+            return os.path.relpath(dest, self.base_path)
+        except FileNotFoundError:
+            logger.warning(f"Deleted source not found when restoring: {source}")
+            return None
     
     def cleanup_empty_directories(self):
         """Remove empty directories in storage"""
