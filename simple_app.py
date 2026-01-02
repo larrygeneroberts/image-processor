@@ -2359,6 +2359,269 @@ def api_quarantine_delete():
         logger.exception('Failed to delete quarantined file %s: %s', full, e)
         return jsonify({'error': str(e)}), 500
 
+
+# --- Photo delete / restore / deleted-page flows (soft delete) ---
+def _soft_delete_photo(photo_id):
+    """Helper to soft-delete a photo: move file to processed/deleted and update DB."""
+    storage = get_storage()
+    conn = get_db_connection()
+    if not conn:
+        return False, 'database unavailable'
+    try:
+        db_cfg = get_db_config()
+        if db_cfg.get_database_type() == 'postgres':
+            cur = conn.cursor()
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, 'photo not found'
+            local_path = row[0]
+            taken_date = row[1]
+        else:
+            cur = conn.cursor()
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = ?', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                return False, 'photo not found'
+            local_path = row[0]
+            taken_date = row[1] if len(row) > 1 else None
+
+        if not local_path:
+            return False, 'photo has no stored path'
+
+        # Move file to deleted area
+        try:
+            new_rel = storage.move_to_deleted(local_path, taken_date=taken_date)
+        except Exception as e:
+            logger.exception('Failed to move photo %s to deleted area: %s', photo_id, e)
+            return False, 'failed to move file'
+
+        # Update DB local_path and mark processed
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = %s, processed = TRUE WHERE id = %s', (new_rel, photo_id))
+            else:
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = ?, processed = 1 WHERE id = ?', (new_rel, photo_id))
+            conn.commit()
+        except Exception as e:
+            logger.exception('Failed to update DB for soft-delete %s: %s', photo_id, e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False, 'db update failed'
+
+        return True, None
+    finally:
+        return_db_connection(conn)
+
+
+@app.route('/photo/<photo_id>/delete', methods=['POST'])
+@require_admin_token
+def photo_delete(photo_id):
+    ok, msg = _soft_delete_photo(photo_id)
+    if not ok:
+        flash(f'Failed to delete photo: {msg}', 'danger')
+    else:
+        flash('Photo moved to Deleted area.', 'success')
+    # Redirect back to referer or gallery
+    next_url = request.form.get('next') or request.headers.get('Referer') or url_for('gallery')
+    return redirect(next_url)
+
+
+@app.route('/photos/bulk_delete', methods=['POST'])
+@require_admin_token
+def photos_bulk_delete():
+    # Accept form field photo_ids[] or JSON body {photo_ids: []}
+    ids = []
+    try:
+        if request.is_json:
+            data = request.get_json() or {}
+            ids = data.get('photo_ids') or []
+        else:
+            ids = request.form.getlist('photo_ids')
+    except Exception:
+        ids = request.form.getlist('photo_ids')
+
+    if not ids:
+        flash('No photos selected for deletion.', 'warning')
+        return redirect(request.headers.get('Referer') or url_for('gallery'))
+
+    successes = 0
+    failures = []
+    for pid in ids:
+        ok, msg = _soft_delete_photo(pid)
+        if ok:
+            successes += 1
+        else:
+            failures.append({'id': pid, 'error': msg})
+
+    flash(f'Moved {successes} photo(s) to Deleted area.', 'success')
+    if failures:
+        flash(f'Failed to delete {len(failures)} photo(s).', 'danger')
+    return redirect(request.headers.get('Referer') or url_for('gallery'))
+
+
+@app.route('/deleted')
+@require_admin_token
+def deleted_page():
+    """Show soft-deleted photos (those moved under processed/deleted)."""
+    photos = []
+    try:
+        conn = get_db_connection()
+        if not conn:
+            flash('Database unavailable', 'danger')
+            return redirect(url_for('admin_functions'))
+        db_cfg = get_db_config()
+        cur = conn.cursor()
+        # Look for photos whose local_path contains the processed/deleted path
+        if db_cfg.get_database_type() == 'postgres':
+            q = "SELECT id, original_filename, local_path, photo_taken_date FROM photos WHERE local_path LIKE %s ORDER BY created_at DESC"
+            cur.execute(q, ('%processed/deleted/%',))
+        else:
+            q = "SELECT id, original_filename, local_path, photo_taken_date FROM photos WHERE local_path LIKE ? ORDER BY created_at DESC"
+            cur.execute(q, ('%processed/deleted/%',))
+        rows = cur.fetchall()
+        for r in rows:
+            if db_cfg.get_database_type() == 'postgres':
+                pid = r[0]
+                name = r[1]
+                lp = r[2]
+                ptd = r[3]
+            else:
+                pid = r[0]
+                name = r[1]
+                lp = r[2]
+                ptd = r[3] if len(r) > 3 else None
+            photos.append({'id': pid, 'original_filename': name, 'local_path': lp, 'photo_taken_date': ptd})
+    except Exception as e:
+        logger.exception('Failed to load deleted photos: %s', e)
+        flash('Failed to load deleted photos', 'danger')
+    finally:
+        try:
+            if conn:
+                return_db_connection(conn)
+        except Exception:
+            pass
+
+    return render_template('deleted.html', photos=photos)
+
+
+@app.route('/photo/<photo_id>/restore', methods=['POST'])
+@require_admin_token
+def photo_restore(photo_id):
+    storage = get_storage()
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(request.headers.get('Referer') or url_for('deleted_page'))
+    try:
+        db_cfg = get_db_config()
+        cur = conn.cursor()
+        if db_cfg.get_database_type() == 'postgres':
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_page'))
+            local_path = row[0]
+            taken_date = row[1]
+        else:
+            cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = ?', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_page'))
+            local_path = row[0]
+            taken_date = row[1] if len(row) > 1 else None
+
+        # Move file back to originals
+        try:
+            new_rel = storage.move_to_originals(local_path, taken_date=taken_date)
+        except Exception as e:
+            logger.exception('Failed to restore photo file %s: %s', photo_id, e)
+            flash('Failed to restore file', 'danger')
+            return redirect(url_for('deleted_page'))
+
+        # Update DB local_path and clear processed flag
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = %s, processed = FALSE WHERE id = %s', (new_rel, photo_id))
+            else:
+                ucur = conn.cursor()
+                ucur.execute('UPDATE photos SET local_path = ?, processed = 0 WHERE id = ?', (new_rel, photo_id))
+            conn.commit()
+            flash('Photo restored successfully.', 'success')
+        except Exception as e:
+            logger.exception('Failed to update DB on restore for %s: %s', photo_id, e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            flash('DB update failed during restore.', 'danger')
+
+    finally:
+        return_db_connection(conn)
+    return redirect(request.headers.get('Referer') or url_for('deleted_page'))
+
+
+@app.route('/photo/<photo_id>/permanent_delete', methods=['POST'])
+@require_admin_token
+def photo_permanent_delete(photo_id):
+    storage = get_storage()
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(request.headers.get('Referer') or url_for('deleted_page'))
+    try:
+        cur = conn.cursor()
+        db_cfg = get_db_config()
+        if db_cfg.get_database_type() == 'postgres':
+            cur.execute('SELECT local_path FROM photos WHERE id = %s', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_page'))
+            local_path = row[0]
+        else:
+            cur.execute('SELECT local_path FROM photos WHERE id = ?', (photo_id,))
+            row = cur.fetchone()
+            if not row:
+                flash('Photo not found', 'danger')
+                return redirect(url_for('deleted_page'))
+            local_path = row[0]
+
+        # Delete file from storage
+        try:
+            storage.delete_photo(local_path)
+        except Exception as e:
+            logger.exception('Failed to delete file for %s: %s', photo_id, e)
+
+        # Remove DB record
+        try:
+            if db_cfg.get_database_type() == 'postgres':
+                dcur = conn.cursor()
+                dcur.execute('DELETE FROM photos WHERE id = %s', (photo_id,))
+            else:
+                dcur = conn.cursor()
+                dcur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
+            conn.commit()
+            flash('Photo permanently deleted.', 'success')
+        except Exception as e:
+            logger.exception('Failed to remove DB record for %s: %s', photo_id, e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            flash('Failed to remove DB record.', 'danger')
+    finally:
+        return_db_connection(conn)
+
+    return redirect(request.headers.get('Referer') or url_for('deleted_page'))
+
 if __name__ == '__main__':
     logger.info("🚀 Starting Simple Photo Database Admin Panel")
     logger.info("%s", "=" * 50)

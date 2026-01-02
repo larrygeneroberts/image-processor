@@ -276,6 +276,48 @@ class StorageManager:
         shutil.move(source_path, target_path)
         logger.info(f"Moved to processed: {target_path}")
         return os.path.relpath(target_path, self.base_path)
+
+    def move_to_deleted(self, relative_path, taken_date=None):
+        """Move a photo into a processed/deleted directory for soft-deletes.
+
+        Args:
+            relative_path (str): Relative path from base_path
+            taken_date (datetime): When photo was taken (used to compute date dir)
+
+        Returns:
+            str: New relative path under processed/deleted
+        """
+        source_path = self.get_photo_path(relative_path)
+        # Build a deleted subdir under processed (e.g. processed/deleted/2024-11/)
+        deleted_base = os.path.join(self.processed_path, 'deleted')
+        target_dir = self._get_date_directory(taken_date, deleted_base)
+        filename = os.path.basename(relative_path)
+        target_path = os.path.join(target_dir, filename)
+
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        shutil.move(source_path, target_path)
+        logger.info(f"Moved to deleted: {target_path}")
+        return os.path.relpath(target_path, self.base_path)
+
+    def move_to_originals(self, relative_path, taken_date=None):
+        """Move a file back into the originals area (used for restoring soft-deleted photos).
+
+        Args:
+            relative_path (str): Relative path from base_path (likely under processed/deleted)
+            taken_date (datetime): When photo was taken to compute destination dir
+
+        Returns:
+            str: New relative path under originals
+        """
+        source_path = self.get_photo_path(relative_path)
+        target_dir = self._get_date_directory(taken_date, self.originals_path)
+        filename = os.path.basename(relative_path)
+        target_path = os.path.join(target_dir, filename)
+
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        shutil.move(source_path, target_path)
+        logger.info(f"Restored to originals: {target_path}")
+        return os.path.relpath(target_path, self.base_path)
     
     def cleanup_empty_directories(self):
         """Remove empty directories in storage"""
