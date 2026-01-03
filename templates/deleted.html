@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2>Deleted Photos</h2>
+  <p>These photos have been soft-deleted and can be restored or permanently removed.</p>
+
+  {% if photos %}
+  <form method="post" action="{{ url_for('photos_bulk_delete') }}">
+    <div class="mb-2">
+      <button class="btn btn-danger" type="submit">Permanently Delete Selected</button>
+    </div>
+    <div class="row">
+      {% for p in photos %}
+      <div class="col-12 col-md-6 col-lg-4 mb-3">
+        <div class="card">
+          <img src="{{ url_for('serve_thumbnail', photo_id=p.id) }}" class="card-img-top" alt="{{ p.original_filename }}">
+          <div class="card-body">
+            <h5 class="card-title">{{ p.original_filename }}</h5>
+            <p class="card-text small">{{ p.local_path }}</p>
+            <div class="d-flex justify-content-between">
+              <form method="post" action="{{ url_for('photo_restore', photo_id=p.id) }}">
+                <button class="btn btn-sm btn-outline-success" type="submit">Restore</button>
+              </form>
+              <form method="post" action="{{ url_for('photo_permanent_delete', photo_id=p.id) }}" onsubmit="return confirm('Permanently delete this photo? This cannot be undone.');">
+                <button class="btn btn-sm btn-danger" type="submit">Delete Permanently</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </form>
+  {% else %}
+    <div class="alert alert-info">No deleted photos found.</div>
+  {% endif %}
+</div>
+{% endblock %}

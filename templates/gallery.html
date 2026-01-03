@@ -549,18 +549,34 @@
                         <i class="fas fa-images me-2"></i>
                         {{ selected_period.month_name }} {{ selected_period.year }} Photos
                     </h4>
-                    <span class="badge bg-primary fs-6">{{ pagination.total }} photos</span>
+                        <div class="d-flex align-items-center gap-3">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="selectAllCheckbox">
+                            <label class="form-check-label small" for="selectAllCheckbox">Select all</label>
+                        </div>
+                        <span class="badge bg-primary fs-6">
+                            {% if pagination.total is not none %}
+                                {{ pagination.total }} photos
+                            {% else %}
+                                {{ photos|length }} photos
+                            {% endif %}
+                        </span>
+                    </div>
                 </div>
-                
+
+                <form id="bulkDeleteForm" method="post" action="{{ url_for('photos_bulk_delete') }}">
                 <div id="photoGrid" class="photo-grid">
                     {% for photo in photos %}
-                        <div class="photo-card" onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')">
-                            <img src="/photo/{{ photo.id }}/thumbnail" 
-                                 alt="{{ photo.original_filename }}" 
-                                 class="photo-thumbnail"
-                                 loading="lazy"
-                                 onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg=='">
-                            
+                        <div class="photo-card">
+                            <div style="position:relative;">
+                                <input type="checkbox" name="photo_ids" value="{{ photo.id }}" class="select-photo" style="position:absolute; z-index:2; left:8px; top:8px;" onclick="event.stopPropagation();">
+                                <img src="/photo/{{ photo.id }}/thumbnail" 
+                                     alt="{{ photo.original_filename }}" 
+                                     class="photo-thumbnail"
+                                     loading="lazy"
+                                     onclick="openLightbox('{{ photo.id }}', '{{ photo.original_filename }}')"
+                                     onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIEltYWdlPC90ZXh0Pjwvc3ZnPg=='">
+                            </div>
                             <div class="photo-info">
                                 <div class="photo-filename text-truncate" title="{{ photo.original_filename }}">
                                     {{ photo.original_filename }}
@@ -580,10 +596,22 @@
                                         {% endif %}
                                     </span>
                                 </div>
+                                <div class="d-flex justify-content-between mt-2">
+                                    <form method="post" action="{{ url_for('photo_delete', photo_id=photo.id) }}" onsubmit="return confirm('Move this photo to Deleted area?');">
+                                        <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                                    </form>
+                                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('serve_full_photo', photo_id=photo.id) }}" target="_blank">Open</a>
+                                </div>
                             </div>
                         </div>
                     {% endfor %}
                 </div>
+                <!-- Bulk action bar -->
+                <div class="mt-3 d-flex gap-2">
+                    <button id="bulkDeleteBtn" class="btn btn-danger" type="submit" onclick="return confirmBulkDelete();">Move selected to Deleted</button>
+                    <a href="{{ url_for('deleted_page') }}" class="btn btn-outline-secondary">View Deleted</a>
+                </div>
+                </form>
                 
                 <!-- Pagination -->
                     {% if (pagination.total_pages and pagination.total_pages > 1) or pagination.next_cursor %}
@@ -769,6 +797,26 @@
                 closeLightbox();
             }
         });
+        
+        // Bulk select and delete helpers
+        document.addEventListener('DOMContentLoaded', function() {
+            const selectAll = document.getElementById('selectAllCheckbox');
+            if (selectAll) {
+                selectAll.addEventListener('change', function(e) {
+                    const checked = !!e.target.checked;
+                    document.querySelectorAll('.select-photo').forEach(cb => cb.checked = checked);
+                });
+            }
+        });
+
+        function confirmBulkDelete() {
+            const checked = Array.from(document.querySelectorAll('.select-photo')).some(cb => cb.checked);
+            if (!checked) {
+                alert('No photos selected.');
+                return false;
+            }
+            return confirm('Move selected photos to Deleted area?');
+        }
     </script>
 </body>
 </html>
