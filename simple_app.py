@@ -984,16 +984,18 @@ def gallery():
         if db_config.get_database_type() == 'postgres':
             from psycopg2.extras import RealDictCursor
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            # available periods
+            # available periods: exclude soft-deleted (processed) rows
             cursor.execute("""
-                SELECT EXTRACT(YEAR FROM photo_taken_date) AS year,
-                       EXTRACT(MONTH FROM photo_taken_date) AS month,
+                SELECT EXTRACT(YEAR FROM COALESCE(photo_taken_date, upload_timestamp)) AS year,
+                       EXTRACT(MONTH FROM COALESCE(photo_taken_date, upload_timestamp)) AS month,
                        COUNT(*) AS photo_count
                 FROM photos
-                WHERE photo_taken_date IS NOT NULL
+                WHERE COALESCE(photo_taken_date, upload_timestamp) IS NOT NULL
+                  AND (processed IS NULL OR processed = FALSE)
+                  AND (local_path IS NULL OR local_path NOT LIKE %s)
                 GROUP BY year, month
                 ORDER BY year DESC, month DESC
-            """)
+            """, ('%processed/deleted/%',))
             for row in cursor.fetchall():
                 yr = int(row['year'])
                 mo = int(row['month'])
@@ -1015,6 +1017,11 @@ def gallery():
                     selected_period = {'year': year, 'month': month, 'month_name': datetime(int(year), int(month), 1).strftime('%B')}
                 except Exception:
                     selected_period = {'year': year, 'month': month, 'month_name': None}
+            # Always exclude soft-deleted/processed rows from gallery results
+            where.append("(processed IS NULL OR processed = FALSE)")
+            # Also exclude any records whose local_path points into the deleted area; allow NULL
+            where.append("(local_path IS NULL OR local_path NOT LIKE %s)")
+            params.append('%processed/deleted/%')
             # Support keyset pagination via ?cursor=<base64> and preserve
             # offset pagination (page) for backwards compatibility.
             cursor_param = request.args.get('cursor')
@@ -1114,7 +1121,9 @@ def gallery():
                        strftime('%m', COALESCE(photo_taken_date, upload_timestamp)) AS month,
                        COUNT(*) AS photo_count
                 FROM photos
-                WHERE COALESCE(photo_taken_date, upload_timestamp) IS NOT NULL
+                                WHERE COALESCE(photo_taken_date, upload_timestamp) IS NOT NULL
+                                    AND (processed IS NULL OR processed = 0)
+                                    AND (local_path IS NULL OR local_path NOT LIKE '%processed/deleted/%')
                 GROUP BY year, month
                 ORDER BY year DESC, month DESC
             """)
@@ -1139,6 +1148,11 @@ def gallery():
                     selected_period = {'year': year, 'month': month, 'month_name': datetime(year, month, 1).strftime('%B')}
                 except Exception:
                     selected_period = {'year': year, 'month': month, 'month_name': None}
+
+            # Exclude soft-deleted/processed rows from SQLite results as well
+            where.append("(processed IS NULL OR processed = 0)")
+            # Allow records with NULL local_path; only exclude when local_path explicitly points at deleted area
+            where.append("(local_path IS NULL OR local_path NOT LIKE '%processed/deleted/%')")
 
             # Support keyset pagination (cursor) while keeping offset pagination
             cursor_param = request.args.get('cursor')

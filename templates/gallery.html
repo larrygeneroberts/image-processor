@@ -549,12 +549,18 @@
                         <i class="fas fa-images me-2"></i>
                         {{ selected_period.month_name }} {{ selected_period.year }} Photos
                     </h4>
-                    <div class="d-flex align-items-center gap-3">
+                        <div class="d-flex align-items-center gap-3">
                         <div class="form-check form-check-inline">
                             <input class="form-check-input" type="checkbox" id="selectAllCheckbox">
                             <label class="form-check-label small" for="selectAllCheckbox">Select all</label>
                         </div>
-                        <span class="badge bg-primary fs-6">{{ pagination.total }} photos</span>
+                        <span class="badge bg-primary fs-6">
+                            {% if pagination.total is not none %}
+                                {{ pagination.total }} photos
+                            {% else %}
+                                {{ photos|length }} photos
+                            {% endif %}
+                        </span>
                     </div>
                 </div>
 

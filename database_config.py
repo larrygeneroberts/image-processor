@@ -7,9 +7,13 @@ Provides flexible database backend selection (Postgres vs SQLite)
 import os
 import json
 import sqlite3
-import psycopg2
-import psycopg2.pool
-from psycopg2.extras import RealDictCursor
+_psycopg2_available = True
+try:
+    import psycopg2
+    import psycopg2.pool
+    from psycopg2.extras import RealDictCursor
+except Exception:
+    _psycopg2_available = False
 from dotenv import load_dotenv
 import logging
 logger = logging.getLogger(__name__)
@@ -76,7 +80,7 @@ class DatabaseConfig:
         # Auto-detect best option if not specified
         if self.db_type == 'auto':
             # Prefer Postgres if available (defaults to localhost)
-            if self.config['postgres']['enabled']:
+            if self.config['postgres']['enabled'] and _psycopg2_available:
                 self.db_type = 'postgres'
                 logger.info("Auto-detected database: Postgres")
             else:
