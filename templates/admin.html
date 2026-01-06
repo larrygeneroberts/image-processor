@@ -1,31 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Dashboard - Local Photo Analyzer</title>
-    
-                            <li><code>DB_PORT</code>: 5432 (PostgreSQL)</li>
-                            <li><code>DB_NAME</code>: photo_analyzer</li>
-                            <li><code>DB_USER</code>: postgres</li>
-                            <li><code>DB_PASSWORD</code>: From Parameter Store</li>
-                        </ul>
-                    </div>
-                    <div class="col-md-6">
-                        <h6>Application Settings:</h6>
-                        <ul class="list-unstyled">
-                            <li><code>FLASK_ENV</code>: development</li>
-                            <li><code>DEBUG</code>: True</li>
-                            <li><code>HOST</code>: 0.0.0.0</li>
-                            <li><code>PORT</code>: 5000</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+{% extends 'base.html' %}
 
-    <!-- Database Switcher Modal -->
+{% block title %}Admin Dashboard - Local Photo Analyzer{% endblock %}
+
+{% block content %}
     <div class="modal fade" id="databaseSwitcherModal" tabindex="-1" aria-labelledby="databaseSwitcherModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
@@ -796,5 +773,4 @@
                 });
         });
     </script>
-</body>
-</html>
+{% endblock %}

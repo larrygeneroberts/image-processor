@@ -2460,21 +2460,115 @@ def photos_bulk_delete():
         ids = request.form.getlist('photo_ids')
 
     if not ids:
-        flash('No photos selected for deletion.', 'warning')
+        flash('No photos selected for action.', 'warning')
         return redirect(request.headers.get('Referer') or url_for('gallery'))
+
+    # Determine requested bulk action: default to soft-delete
+    action = None
+    try:
+        if request.is_json:
+            data = request.get_json() or {}
+            action = data.get('action')
+        else:
+            action = request.form.get('action')
+    except Exception:
+        action = request.form.get('action')
 
     successes = 0
     failures = []
-    for pid in ids:
-        ok, msg = _soft_delete_photo(pid)
-        if ok:
-            successes += 1
-        else:
-            failures.append({'id': pid, 'error': msg})
+    db_cfg = get_db_config()
+    storage = get_storage()
+    conn = get_db_connection()
+    if not conn:
+        flash('Database unavailable', 'danger')
+        return redirect(request.headers.get('Referer') or url_for('gallery'))
 
-    flash(f'Moved {successes} photo(s) to Deleted area.', 'success')
+    try:
+        for pid in ids:
+            try:
+                if action == 'restore':
+                    # Restore: move file back to originals and update DB
+                    cur = conn.cursor()
+                    if db_cfg.get_database_type() == 'postgres':
+                        cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = %s', (pid,))
+                        row = cur.fetchone()
+                        if not row:
+                            raise RuntimeError('photo not found')
+                        local_path, taken_date = row[0], row[1]
+                    else:
+                        cur.execute('SELECT local_path, photo_taken_date FROM photos WHERE id = ?', (pid,))
+                        row = cur.fetchone()
+                        if not row:
+                            raise RuntimeError('photo not found')
+                        local_path = row[0]
+                        taken_date = row[1] if len(row) > 1 else None
+
+                    new_rel = storage.move_to_originals(local_path, taken_date=taken_date)
+                    if db_cfg.get_database_type() == 'postgres':
+                        ucur = conn.cursor()
+                        ucur.execute('UPDATE photos SET local_path = %s, processed = FALSE WHERE id = %s', (new_rel, pid))
+                    else:
+                        ucur = conn.cursor()
+                        ucur.execute('UPDATE photos SET local_path = ?, processed = 0 WHERE id = ?', (new_rel, pid))
+                    conn.commit()
+                    successes += 1
+
+                elif action == 'permanent_delete':
+                    # Permanent delete: delete file and remove DB row
+                    cur = conn.cursor()
+                    if db_cfg.get_database_type() == 'postgres':
+                        cur.execute('SELECT local_path FROM photos WHERE id = %s', (pid,))
+                        row = cur.fetchone()
+                        if not row:
+                            raise RuntimeError('photo not found')
+                        local_path = row[0]
+                    else:
+                        cur.execute('SELECT local_path FROM photos WHERE id = ?', (pid,))
+                        row = cur.fetchone()
+                        if not row:
+                            raise RuntimeError('photo not found')
+                        local_path = row[0]
+
+                    try:
+                        storage.delete_photo(local_path)
+                    except Exception:
+                        logger.exception('Failed to delete file during bulk permanent delete for %s', pid)
+
+                    if db_cfg.get_database_type() == 'postgres':
+                        dcur = conn.cursor()
+                        dcur.execute('DELETE FROM photos WHERE id = %s', (pid,))
+                    else:
+                        dcur = conn.cursor()
+                        dcur.execute('DELETE FROM photos WHERE id = ?', (pid,))
+                    conn.commit()
+                    successes += 1
+
+                else:
+                    # Default: soft-delete (existing behavior)
+                    ok, msg = _soft_delete_photo(pid)
+                    if ok:
+                        successes += 1
+                    else:
+                        raise RuntimeError(msg or 'soft-delete failed')
+
+            except Exception as e:
+                logger.exception('Bulk action failed for %s: %s', pid, e)
+                failures.append({'id': pid, 'error': str(e)})
+
+    finally:
+        return_db_connection(conn)
+
+    # Friendly messages
+    if action == 'restore':
+        flash(f'Restored {successes} photo(s).', 'success')
+    elif action == 'permanent_delete':
+        flash(f'Permanently deleted {successes} photo(s).', 'success')
+    else:
+        flash(f'Moved {successes} photo(s) to Deleted area.', 'success')
+
     if failures:
-        flash(f'Failed to delete {len(failures)} photo(s).', 'danger')
+        flash(f'Failed to perform action on {len(failures)} photo(s).', 'danger')
+
     return redirect(request.headers.get('Referer') or url_for('gallery'))
 
 

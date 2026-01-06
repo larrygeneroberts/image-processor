@@ -6,14 +6,26 @@
   <p>These photos have been soft-deleted and can be restored or permanently removed.</p>
 
   {% if photos %}
-  <form method="post" action="{{ url_for('photos_bulk_delete') }}">
-    <div class="mb-2">
-      <button class="btn btn-danger" type="submit">Permanently Delete Selected</button>
+  <form id="bulkForm" method="post" action="{{ url_for('photos_bulk_delete') }}">
+    <input type="hidden" name="action" id="bulkAction" value="permanent_delete">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <div>
+        <input type="checkbox" id="selectAll" /> <label for="selectAll" class="mb-0">Select all</label>
+      </div>
+      <div class="btn-group">
+        <button type="button" class="btn btn-outline-success" id="restoreSelected">Restore Selected</button>
+        <button type="button" class="btn btn-danger" id="deleteSelected">Permanently Delete Selected</button>
+      </div>
     </div>
+
     <div class="row">
       {% for p in photos %}
       <div class="col-12 col-md-6 col-lg-4 mb-3">
         <div class="card">
+          <div class="form-check position-absolute m-2">
+            <input class="form-check-input select-photo" type="checkbox" name="photo_ids" value="{{ p.id }}" id="chk-{{ p.id }}">
+            <label class="form-check-label" for="chk-{{ p.id }}"></label>
+          </div>
           <img src="{{ url_for('serve_thumbnail', photo_id=p.id) }}" class="card-img-top" alt="{{ p.original_filename }}">
           <div class="card-body">
             <h5 class="card-title">{{ p.original_filename }}</h5>
@@ -36,4 +48,40 @@
     <div class="alert alert-info">No deleted photos found.</div>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block head_extra %}
+<style>
+  .card { position: relative; }
+  .form-check.position-absolute { top: 8px; left: 8px; z-index: 10; background: rgba(255,255,255,0.8); padding: 4px; border-radius: 4px; }
+</style>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function(){
+    const selectAll = document.getElementById('selectAll');
+    const checkboxes = Array.from(document.querySelectorAll('.select-photo'));
+    const restoreBtn = document.getElementById('restoreSelected');
+    const deleteBtn = document.getElementById('deleteSelected');
+    const bulkForm = document.getElementById('bulkForm');
+    const bulkAction = document.getElementById('bulkAction');
+
+    if (!selectAll) return;
+
+    selectAll.addEventListener('change', function(){
+      checkboxes.forEach(cb => cb.checked = selectAll.checked);
+    });
+
+    function submitBulk(action, confirmMsg) {
+      const any = checkboxes.some(cb => cb.checked);
+      if (!any) { alert('Please select at least one photo.'); return; }
+      if (confirmMsg && !confirm(confirmMsg)) return;
+      bulkAction.value = action;
+      bulkForm.submit();
+    }
+
+    restoreBtn.addEventListener('click', function(){ submitBulk('restore', null); });
+    deleteBtn.addEventListener('click', function(){ submitBulk('permanent_delete', 'Permanently delete selected photos? This cannot be undone.'); });
+  });
+</script>
+ 
 {% endblock %}
